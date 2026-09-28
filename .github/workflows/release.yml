@@ -1,0 +1,266 @@
+name: Release Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  APP_VERSION: "0.4.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:41
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            rpm-build \
+            cargo \
+            rust \
+            dbus-devel \
+            libusb1-devel \
+            hidapi-devel \
+            gtk4-devel \
+            libadwaita-devel \
+            glib2-devel \
+            graphene-devel \
+            pango-devel \
+            cairo-devel \
+            gdk-pixbuf2-devel \
+            systemd-devel \
+            git
+
+      - name: Setup rpmbuild structure
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          VERSION=$(grep '^Version:' packaging/fedora/openrazer.spec | awk '{print $2}')
+          SRCDIR="openrazer-${VERSION}"
+          mkdir -p "$SRCDIR"
+          cp -r . "$SRCDIR/" 2>/dev/null || true
+          tar -czf ~/rpmbuild/SOURCES/openrazer-${VERSION}.tar.gz "$SRCDIR"
+
+      - name: Build RPM
+        run: rpmbuild -bb packaging/fedora/openrazer.spec
+
+      - name: Collect RPM
+        run: |
+          mkdir -p rpm-output
+          find ~/rpmbuild/RPMS -name "*.rpm" ! -name "*-debuginfo-*" ! -name "*-debugsource-*" -exec cp {} rpm-output/ \;
+
+      - name: Upload RPM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rpm-package
+          path: rpm-output/*.rpm
+
+  build-deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libdbus-1-dev \
+            libhidapi-dev \
+            libusb-1.0-0-dev \
+            libudev-dev \
+            libglib2.0-dev \
+            libgraphene-1.0-dev \
+            libpango1.0-dev \
+            libcairo2-dev \
+            libgdk-pixbuf-2.0-dev \
+            libsystemd-dev \
+            pkg-config \
+            dpkg-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Build .deb package
+        run: |
+          PKG="openrazer_${APP_VERSION}_amd64"
+          mkdir -p $PKG/DEBIAN
+          mkdir -p $PKG/usr/bin
+          mkdir -p $PKG/usr/share/razercontrol
+          mkdir -p $PKG/usr/share/applications
+          mkdir -p $PKG/usr/share/icons/hicolor/256x256/apps
+          mkdir -p $PKG/etc/udev/rules.d
+          mkdir -p $PKG/usr/lib/systemd/user
+
+          cp target/release/razer-settings $PKG/usr/bin/
+          cp target/release/razer-cli $PKG/usr/bin/
+          cp target/release/daemon $PKG/usr/bin/razer-daemon
+          cp data/devices/laptops.json $PKG/usr/share/razercontrol/
+          cp data/gui/io.github.stizzy98.openrazer.desktop $PKG/usr/share/applications/
+          cp data/gui/icon.png $PKG/usr/share/icons/hicolor/256x256/apps/io.github.stizzy98.openrazer.png
+          cp data/udev/70-openrazer-hidraw.rules $PKG/etc/udev/rules.d/
+          cp data/services/systemd/razercontrol.service $PKG/usr/lib/systemd/user/
+
+          cat > $PKG/DEBIAN/control << 'CTRL'
+          Package: openrazer
+          Version: ${APP_VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-4-1, libadwaita-1-0, libdbus-1-3, libhidapi-hidraw0
+          Maintainer: Stizzy-98 <stizzy98@outlook.com>
+          Description: Razer Laptop Control
+           A Linux userspace application to control Razer Blade laptops.
+           No kernel modules (DKMS) required! Features a modern GTK4/libadwaita
+           interface for fan control, power modes, keyboard lighting, and
+           battery health optimization.
+          CTRL
+          # Remove leading whitespace from heredoc (DEBIAN/control must not have leading spaces on field names)
+          sed -i 's/^          //' $PKG/DEBIAN/control
+          # Substitute version variable
+          sed -i "s/\${APP_VERSION}/${APP_VERSION}/" $PKG/DEBIAN/control
+
+          cat > $PKG/DEBIAN/postinst << 'POSTINST'
+          #!/bin/sh
+          set -e
+          udevadm control --reload-rules || true
+          udevadm trigger || true
+          # Enable systemd user service for all logged-in users
+          if [ -d /run/systemd/system ]; then
+            systemctl --global enable razercontrol.service || true
+          fi
+          POSTINST
+          chmod 755 $PKG/DEBIAN/postinst
+
+          cat > $PKG/DEBIAN/prerm << 'PRERM'
+          #!/bin/sh
+          set -e
+          if [ -d /run/systemd/system ]; then
+            systemctl --global disable razercontrol.service || true
+          fi
+          PRERM
+          chmod 755 $PKG/DEBIAN/prerm
+
+          dpkg-deb --build --root-owner-group $PKG
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deb-package
+          path: openrazer_*.deb
+
+  check-nix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+
+      - name: Update flake inputs
+        run: nix flake update
+
+      - name: Build with Nix
+        run: nix build --print-build-logs
+
+  build-tarball:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libdbus-1-dev \
+            libhidapi-dev \
+            libusb-1.0-0-dev \
+            libudev-dev \
+            libglib2.0-dev \
+            libgraphene-1.0-dev \
+            libpango1.0-dev \
+            libcairo2-dev \
+            libgdk-pixbuf-2.0-dev \
+            libsystemd-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package tarball
+        run: |
+          DIST="openrazer-${APP_VERSION}-x86_64"
+          mkdir -p $DIST/bin $DIST/share/applications $DIST/share/razercontrol $DIST/systemd $DIST/udev
+          cp target/release/razer-settings $DIST/bin/
+          cp target/release/razer-cli $DIST/bin/
+          cp target/release/daemon $DIST/bin/
+          cp data/gui/io.github.stizzy98.openrazer.desktop $DIST/share/applications/
+          cp data/devices/laptops.json $DIST/share/razercontrol/
+          cp data/services/systemd/razercontrol.service $DIST/systemd/
+          cp data/udev/70-openrazer-hidraw.rules $DIST/udev/
+          cp packaging/tarball-install.sh $DIST/install.sh
+          chmod +x $DIST/install.sh
+          cp LICENSE $DIST/
+          cp README.md $DIST/
+          tar -czvf "${DIST}.tar.gz" "$DIST"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-tarball
+          path: openrazer-*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-rpm, build-deb, build-tarball, check-nix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Display artifacts
+        run: find artifacts -type f -ls
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum rpm-package/*.rpm deb-package/*.deb linux-tarball/*.tar.gz \
+            | sed 's#  [^/]*/#  #' > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/rpm-package/*.rpm
+            artifacts/deb-package/*.deb
+            artifacts/linux-tarball/*.tar.gz
+            artifacts/SHA256SUMS

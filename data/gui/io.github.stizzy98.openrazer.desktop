@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Razer Settings
+Comment=Configure your Razer laptop power and lighting profiles
+Exec=razer-settings
+Icon=io.github.stizzy98.openrazer
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;System;
+StartupNotify=true
+StartupWMClass=io.github.stizzy98.openrazer

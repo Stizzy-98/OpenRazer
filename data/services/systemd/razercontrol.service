@@ -1,0 +1,26 @@
+[Unit]
+Description=Razer laptop control daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/.local/share/razercontrol
+ExecStart=/usr/bin/razer-daemon
+Restart=on-failure
+RestartSec=5
+# The daemon exits with 75 after its binary is updated; restart straight into the new version.
+RestartForceExitStatus=75
+
+# Hardening. Only restrictions that work in a user unit without namespaces, so hidraw access,
+# the D-Bus system bus (UPower/login1), and the parec audio capture keep working.
+UMask=0077
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

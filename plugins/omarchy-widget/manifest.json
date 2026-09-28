@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "razercontrol.lighting",
+  "name": "Razer Lighting",
+  "version": "1.0.0",
+  "author": "Stizzy-98",
+  "description": "Quick keyboard lighting effect switcher for Razer Control",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Widget.qml" },
+  "barWidget": {
+    "displayName": "Razer Lighting",
+    "description": "Quick keyboard lighting effect switcher",
+    "category": "System",
+    "allowMultiple": false
+  }
+}

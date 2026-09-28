@@ -1,0 +1,11 @@
+# Build artifacts
+target/
+install/
+pkg/
+.ccls-cache
+
+# Release binaries (use GitHub Releases, not the repo)
+*.rpm
+*.AppImage
+*.tar.gz
+release/
