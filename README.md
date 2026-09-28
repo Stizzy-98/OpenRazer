@@ -1,7 +1,7 @@
 # OpenRazer
 
 An up to date GTK4 app for fully controlling Razer Blade laptops on Linux — fans, power profiles, CPU/GPU boost,
-battery health, and keyboard lighting with full suite of razer effects and individual key color configuration capability — with no kernel modules and no DKMS. Built for
+battery health, and keyboard lighting with the full suite of razer effects and individual key color configuration capability — with no kernel modules and no DKMS. Built for
 **[Omarchy](https://omarchy.org)** (Hyprland) and tested on a **Razer Blade 15 Advanced (Early
 2022)**; however it also runs on Ubuntu, Fedora, Mint, and Arch.
 
@@ -37,6 +37,7 @@ It installs as the `openrazer` package and shows up in your app launcher as **Ra
   where each ring starts. It keeps only the key's position on the lighting grid: key codes are
   never logged, saved, or sent anywhere, and the keyboard stops being read as soon as you switch
   to another effect.
+- Open an issue if you'd like to see another lighting effect not listed.
 
 **Known issues**
 
