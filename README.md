@@ -173,6 +173,80 @@ systemctl --user restart razercontrol    # restart it
 journalctl --user -u razercontrol -f     # follow its logs
 ```
 
+## Command Line
+
+`razer-cli` does everything the app does, from a terminal or a script. It talks to the same
+background daemon, so the daemon must be running. Settings that are kept separately for AC and
+battery take `ac` or `bat` as their first argument. Colors are three numbers from 0 to 255 (red,
+green, blue). Add `--help` to any command to see its arguments and allowed values.
+
+**Reading settings**
+
+```bash
+razer-cli read device            # model, lighting grid, keyboard firmware, keyboard layout
+razer-cli read effect            # the lighting effect that's showing now
+razer-cli read frame             # every key's color, one grid row per line
+razer-cli read power ac          # power mode (and CPU/GPU boost in Custom)
+razer-cli read fan ac            # fan setting (0 = automatic)
+razer-cli read fan-rpm           # actual fan speed
+razer-cli read brightness ac     # keyboard brightness, 0-100
+razer-cli read logo ac           # logo mode
+razer-cli read bho               # battery charge limit
+razer-cli read sync              # whether AC and battery settings are linked
+razer-cli read idle ac           # lights-off idle timeout
+razer-cli read gpu               # GPUs, dGPU power management, envycontrol mode
+```
+
+**Performance and battery**
+
+```bash
+razer-cli write power ac 1               # 0 Balanced, 1 Gaming, 2 Creator, 3 Silent
+razer-cli write fan ac 4000              # fixed RPM within your model's range; 0 = automatic
+razer-cli write brightness bat 50        # keyboard brightness, 0-100
+razer-cli write logo ac 1                # 0 off, 1 on, 2 breathing
+razer-cli write bho on 80                # cap charging at 50-80% (multiples of 5)
+razer-cli write bho off
+razer-cli write sync on                  # link AC and battery settings
+razer-cli write idle ac 10               # lights off after 10 idle minutes, 0 = never (GNOME only)
+razer-cli write runtime-pm on            # let the dGPU power down when idle
+razer-cli write gpu-mode hybrid          # hybrid, integrated, or nvidia (needs envycontrol)
+```
+
+**Lighting effects**
+
+```bash
+razer-cli standard-effect static 255 0 0
+razer-cli standard-effect wave 1                         # direction 1 or 2
+razer-cli standard-effect breathing 1 255 0 0            # 1 single color
+razer-cli standard-effect breathing 2 255 0 0 0 0 255    # 2 two colors
+razer-cli standard-effect breathing 3                    # 3 random colors
+razer-cli standard-effect reactive 2 0 255 0             # speed 1-4, then color
+razer-cli standard-effect starlight 1 2 255 255 255      # kind 1-3 as breathing, speed 1-3
+razer-cli standard-effect spectrum
+razer-cli standard-effect off
+
+razer-cli wheel 1 50                          # direction 1 or 2, speed 0-100%
+razer-cli stars 2                             # speed 1-4
+razer-cli ripple 1 0 0 0 3                    # mode 1 rainbow, 2 static, 3 random; color; speed 1-4
+razer-cli ripple 2 0 255 255 4
+razer-cli temperature 45 90                   # blue at or below 45 °C, red at or above 90 °C
+razer-cli audio-meter 1 0 255 0 100 30 100    # mode 1 rainbow, 2 static, 3 intensity; color;
+                                              # sensitivity 1-200, decay 0-100, brightness 0-100
+```
+
+**Per-key painting**
+
+Rows and columns count from 0 at the top-left key position; `read device` shows your grid size.
+
+```bash
+razer-cli paint fill 0 0 255          # every key one color
+razer-cli paint key 3 5 255 0 0       # row 3, column 5
+razer-cli paint random                # a random color on every key
+razer-cli paint clear                 # every key off
+```
+
+Commands exit with status 0 on success and 1 on failure, so they can be used in scripts.
+
 ## Desktop Widgets
 
 **Omarchy bar widget** — a lighting preset switcher in the Omarchy top bar:
