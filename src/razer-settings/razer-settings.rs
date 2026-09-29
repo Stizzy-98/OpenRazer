@@ -1911,40 +1911,52 @@ fn make_lighting_page(device: SupportedDevice, layout: u8) -> SettingsPage {
     // to be called from the GUI again.
     let effects_section = settings_page.add_section(Some("Keyboard Effects"));
 
-    // Index = value sent to the daemon's SetStandardEffect name match, see EFFECT_NAMES below.
-    const EFFECT_NAMES: [&str; 7] = [
-        "off",
-        "static",
-        "wave",
-        "breathing",
-        "reactive",
-        "spectrum",
-        "starlight",
-    ];
-    const OFF: u32 = 0;
-    const STATIC: u32 = 1;
-    const WAVE: u32 = 2;
-    const BREATHING: u32 = 3;
-    const REACTIVE: u32 = 4;
+    // Positions in the Effect Type combo: the effects alphabetically, then Off last (see
+    // EFFECT_LABELS). The native effects' SetStandardEffect names are in `standard_effect_name`.
+    const SOUNDBAR: u32 = 0;
+    const BREATHING: u32 = 1;
+    const TEMPERATURE: u32 = 2;
+    const REACTIVE: u32 = 3;
+    const RIPPLE: u32 = 4;
     const SPECTRUM: u32 = 5;
     const STARLIGHT: u32 = 6;
-    // Wheel is NOT part of EFFECT_NAMES/SetStandardEffect - the hardware's native Wheel effect
-    // never produced any visible output on this laptop, so it's a real software animation (a
-    // rotating rainbow, see kbd::effects::Wheel) sent via its own SetWheelEffect command instead.
-    const WHEEL: u32 = 7;
-    // Audio Meter is also a software effect, like Wheel - a real single-level VU meter (the whole
-    // keyboard rises/falls together with overall volume, not a per-band spectrum analyzer - see
-    // kbd::effects::SoundBar) sent via its own SetSoundBarEffect command.
-    const SOUNDBAR: u32 = 8;
-    // Stars is also a software effect - per-key random colors, re-rolled on a fixed interval
-    // (see kbd::effects::Stars) - sent via its own SetStarsEffect command.
-    const STARS: u32 = 9;
-    // Ripple is also a software effect - rings spreading out from each key press (see
-    // kbd::effects::Ripple) - sent via its own SetRippleEffect command.
-    const RIPPLE: u32 = 10;
-    // CPU Temperature is also a software effect - the whole keyboard colored by CPU temperature
-    // (see kbd::effects::CpuTemperature) - sent via its own SetTemperatureEffect command.
-    const TEMPERATURE: u32 = 11;
+    const STARS: u32 = 7;
+    const STATIC: u32 = 8;
+    const WAVE: u32 = 9;
+    const WHEEL: u32 = 10;
+    const OFF: u32 = 11;
+    const EFFECT_LABELS: [&str; 12] = [
+        "Audio Meter",
+        "Breathing",
+        "CPU Temperature",
+        "Reactive",
+        "Ripple",
+        "Spectrum",
+        "Starlight",
+        "Stars",
+        "Static",
+        "Wave",
+        "Wheel",
+        "Off",
+    ];
+
+    /// SetStandardEffect name for the native effects; None for the software ones, which each
+    /// have their own command.
+    fn standard_effect_name(effect: u32) -> Option<&'static str> {
+        Some(match effect {
+            OFF => "off",
+            STATIC => "static",
+            WAVE => "wave",
+            BREATHING => "breathing",
+            REACTIVE => "reactive",
+            SPECTRUM => "spectrum",
+            STARLIGHT => "starlight",
+            _ => return None,
+        })
+    }
+    // Wheel, Audio Meter, Stars, Ripple, and CPU Temperature are software effects rendered by the
+    // daemon (see kbd::effects), each sent with its own Set*Effect command rather than
+    // SetStandardEffect. Wheel replaces the native one, which shows nothing on this laptop.
     // Real firmware "type" byte for Breathing/Starlight, confirmed against OpenRazer's
     // razerchromacommon.c (razer_chroma_standard_matrix_effect_{breathing,starlight}_*): the
     // wire value is 1/2/3, NOT 0-indexed - sending 0 for "Single" hit an unrecognized type and
@@ -2056,20 +2068,7 @@ fn make_lighting_page(device: SupportedDevice, layout: u8) -> SettingsPage {
     let effect_combo = make_combo_row(
         "Effect Type",
         "Choose keyboard lighting effect",
-        &[
-            "Off",
-            "Static",
-            "Wave",
-            "Breathing",
-            "Reactive",
-            "Spectrum",
-            "Starlight",
-            "Wheel",
-            "Audio Meter",
-            "Stars",
-            "Ripple",
-            "CPU Temperature",
-        ],
+        &EFFECT_LABELS,
         STATIC,
     );
     effects_section.add_row(&effect_combo);
@@ -2468,7 +2467,7 @@ fn make_lighting_page(device: SupportedDevice, layout: u8) -> SettingsPage {
                 _ => vec![],
             };
             // Wheel is a different report family entirely (see WHEEL's declaration above) - it
-            // never goes through SetStandardEffect/EFFECT_NAMES.
+            // never goes through SetStandardEffect.
             let ok = if effect == WHEEL {
                 let wheel_speed = WHEEL_SPEEDS[(wheel_speed_ref.value() as usize).clamp(1, 4) - 1];
                 set_wheel_effect(direction, wheel_speed)
@@ -2490,8 +2489,7 @@ fn make_lighting_page(device: SupportedDevice, layout: u8) -> SettingsPage {
             } else if effect == TEMPERATURE {
                 set_temperature_effect(temp_cool_ref.value() as u8, temp_hot_ref.value() as u8)
             } else {
-                let name = EFFECT_NAMES[effect as usize];
-                set_standard_effect(name, params)
+                standard_effect_name(effect).and_then(|name| set_standard_effect(name, params))
             };
 
             // Show toast feedback

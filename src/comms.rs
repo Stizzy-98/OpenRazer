@@ -134,6 +134,10 @@ pub enum DaemonCommand {
         cool: u8, // °C at or below which the keyboard is fully blue
         hot: u8,  // °C at or above which it's fully red
     }, // Whole keyboard colored by CPU temperature
+    GetEffect, // What the keyboard is showing now
+    GetIdle {
+        ac: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -248,6 +252,13 @@ pub enum DaemonResponse {
     SetTemperatureEffect {
         result: bool,
     },
+    GetEffect {
+        name: String,    // e.g. "Ripple", "Static", "Painted", "Wave"
+        params: Vec<u8>, // that effect's arguments, as its Set* command takes them
+    },
+    GetIdle {
+        minutes: u32, // 0 = never turn the lights off
+    },
 }
 
 pub fn bind() -> Option<UnixStream> {
@@ -323,12 +334,9 @@ pub fn send_to_daemon(command: DaemonCommand, mut sock: UnixStream) -> Option<Da
 /// a `DaemonResponse`. None is returned if deserializing failed
 fn read_from_socked_resp(bytes: &[u8]) -> Option<DaemonResponse> {
     match bincode::deserialize::<DaemonResponse>(bytes) {
-        Ok(res) => {
-            println!("RES: {:?}", res);
-            Some(res)
-        }
+        Ok(res) => Some(res),
         Err(e) => {
-            println!("RES ERROR: {}", e);
+            eprintln!("Couldn't decode the daemon's response: {}", e);
             None
         }
     }

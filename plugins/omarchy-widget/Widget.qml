@@ -55,19 +55,19 @@ BarWidget {
   }
 
   readonly property var effectRows: [
-    { label: "Off", action: function() { run(["standard-effect", "off"]) } },
+    { label: "Audio Meter", action: function() { run(["audio-meter", "1", "0", "255", "0", "100", "30", "100"]) } },
+    { label: "Breathing", action: function() { run(["standard-effect", "breathing", "1", "255", "255", "255", "0", "0", "0"]) } },
+    { label: "CPU Temperature", action: function() { run(["temperature", "45", "90"]) } },
+    { label: "Reactive …", action: function() { pickingColorFor = "reactive"; cursorIndex = 0 } },
+    { label: "Ripple", action: function() { run(["ripple", "1", "0", "0", "0", "3"]) } },
+    { label: "Spectrum", action: function() { run(["standard-effect", "spectrum"]) } },
+    { label: "Starlight", action: function() { run(["standard-effect", "starlight", "1", "2", "255", "255", "255", "0", "0", "0"]) } },
+    { label: "Stars", action: function() { run(["stars", "2"]) } },
     { label: "Static …", action: function() { pickingColorFor = "static"; cursorIndex = 0 } },
     { label: "Wave →", action: function() { run(["standard-effect", "wave", "1"]) } },
     { label: "Wave ←", action: function() { run(["standard-effect", "wave", "2"]) } },
-    { label: "Breathing", action: function() { run(["standard-effect", "breathing", "1", "255", "255", "255", "0", "0", "0"]) } },
-    { label: "Reactive …", action: function() { pickingColorFor = "reactive"; cursorIndex = 0 } },
-    { label: "Spectrum", action: function() { run(["standard-effect", "spectrum"]) } },
-    { label: "Starlight", action: function() { run(["standard-effect", "starlight", "1", "2", "255", "255", "255", "0", "0", "0"]) } },
     { label: "Wheel", action: function() { run(["wheel", "1", "50"]) } },
-    { label: "Audio Meter", action: function() { run(["audio-meter", "1", "0", "255", "0", "100", "30", "100"]) } },
-    { label: "Stars", action: function() { run(["stars", "2"]) } },
-    { label: "Ripple", action: function() { run(["ripple", "1", "0", "0", "0", "3"]) } },
-    { label: "CPU Temperature", action: function() { run(["temperature", "45", "90"]) } }
+    { label: "Off", action: function() { run(["standard-effect", "off"]) } }
   ]
 
   function activateCursor() {

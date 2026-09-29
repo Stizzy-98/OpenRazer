@@ -960,6 +960,32 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                 };
                 Some(comms::DaemonResponse::GetDeviceName { name })
             }
+            comms::DaemonCommand::GetIdle { ac } if ac < 2 => {
+                Some(comms::DaemonResponse::GetIdle {
+                    minutes: d.get_idle(ac),
+                })
+            }
+            comms::DaemonCommand::GetEffect => {
+                let software = EFFECT_MANAGER
+                    .lock()
+                    .ok()
+                    .and_then(|mut k| k.active_effect());
+                let (name, params) = software.unwrap_or_else(|| {
+                    let (id, params) = d.get_standard_effect();
+                    let name = match id {
+                        device::RazerLaptop::OFF => "Off",
+                        device::RazerLaptop::WAVE => "Wave",
+                        device::RazerLaptop::REACTIVE => "Reactive",
+                        device::RazerLaptop::BREATHING => "Breathing",
+                        device::RazerLaptop::SPECTRUM => "Spectrum",
+                        device::RazerLaptop::STATIC => "Static",
+                        device::RazerLaptop::STARLIGHT => "Starlight",
+                        _ => "Unknown",
+                    };
+                    (name.to_string(), params)
+                });
+                Some(comms::DaemonResponse::GetEffect { name, params })
+            }
             comms::DaemonCommand::GetStandardEffect => {
                 let (effect, params) = d.get_standard_effect();
                 Some(comms::DaemonResponse::GetStandardEffect { effect, params })

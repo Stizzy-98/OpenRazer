@@ -51,6 +51,11 @@
 - App ID `io.github.stizzy98.openrazer` (desktop entry, icon, GApplication ID); packages are
   named `openrazer`
 - The app is GUI-only; `razer-cli` remains as an internal helper for the desktop widgets
+- `razer-cli` covers everything the app does: every effect (including Ripple and CPU
+  Temperature), per-key painting (`paint key/fill/random/clear`), and new reads for the device
+  (`read device`), the active effect (`read effect`), the key colors (`read frame`), and the idle
+  timeout (`read`/`write idle`). Arguments are range-checked, failures exit with status 1, and
+  the daemon's raw responses are no longer printed
 - No donation prompts and no update checkers in the app or the KDE widget
 - Removed the unused Blade 16 2025 thermal-safety module and the non-functional C++ KDE applet
 - Lighting commands use transaction id 0xFF on every model, as OpenRazer does for all Blade
@@ -83,6 +88,10 @@
   updated yanked crates
 
 ### Bug Fixes
+
+- Fix `razer-cli standard-effect breathing`/`starlight` always sending both colors: Single now
+  sends one color and Random none, as the firmware expects
+- Fix the KDE widget never showing Battery Health Optimizer as off (the CLI printed it to stderr)
 
 - Fix Static colors not applying: the native Static effect is acknowledged but ignored by this
   firmware, so Static now renders through the per-key engine

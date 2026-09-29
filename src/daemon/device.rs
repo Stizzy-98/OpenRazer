@@ -285,6 +285,10 @@ impl DeviceManager {
         }
     }
 
+    pub fn get_idle(&mut self, ac: usize) -> u32 {
+        self.get_ac_config(ac).map_or(0, |c| c.idle)
+    }
+
     pub fn change_idle(&mut self, ac: usize, timeout: u32) -> bool {
         // let mut arm: bool = false;
         if let Some(config) = self.get_config()

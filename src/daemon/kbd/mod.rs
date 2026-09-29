@@ -167,6 +167,8 @@ impl EffectLayer {
 }
 pub struct EffectManager {
     layers: Vec<EffectLayer>,
+    /// A painted/filled frame (Static on per-key models, or per-key painting) is on the keyboard.
+    custom_frame: bool,
     last_update_ms: u128,
     render_board: board::KeyboardData,
 }
@@ -175,13 +177,35 @@ impl EffectManager {
     pub fn new() -> EffectManager {
         EffectManager {
             layers: vec![],
+            custom_frame: false,
             last_update_ms: get_millis(),
             render_board: board::KeyboardData::new(),
         }
     }
 
     pub fn push_effect(&mut self, effect: Box<dyn Effect>, mask: [bool; TOTAL_KEYS]) {
+        self.custom_frame = false;
         self.layers.push(EffectLayer::new(effect, mask))
+    }
+
+    /// The running software effect's saved name and args, or for a painted frame "Static" with
+    /// its color when every key matches and "Painted" otherwise. None when neither is active
+    /// (a native hardware effect is showing).
+    pub fn active_effect(&mut self) -> Option<(String, Vec<u8>)> {
+        if let Some(layer) = self.layers.last_mut() {
+            let save = layer.effect.save();
+            return Some((save.name, save.args));
+        }
+        if !self.custom_frame {
+            return None;
+        }
+        let frame = self.render_board.get_curr_state();
+        let first = frame.get(..3)?;
+        if frame.chunks(3).all(|c| c == first) {
+            Some(("Static".into(), first.to_vec()))
+        } else {
+            Some(("Painted".into(), vec![]))
+        }
     }
 
     pub fn pop_effect(&mut self, laptop: &mut device::RazerLaptop) {
@@ -194,6 +218,7 @@ impl EffectManager {
         // verify the first settled before the second one (the real command) went out, which is
         // what was actually causing native Static colour clicks to intermittently stick on a
         // stale/wrong colour indefinitely instead of applying the newly selected one.
+        self.custom_frame = false;
         let had_layer = self.layers.pop().is_some();
         if had_layer && self.layers.is_empty() {
             self.render_board.set_kbd_colour(0, 0, 0);
@@ -274,6 +299,7 @@ impl EffectManager {
             return false;
         }
         self.layers.clear();
+        self.custom_frame = true;
         self.render_board
             .set_key_colour(index / cols, index % cols, r, g, b);
         self.render_board.update_kbd(laptop);
@@ -284,6 +310,7 @@ impl EffectManager {
     /// Fills every key directly, same bypass as `set_custom_key`.
     pub fn fill_custom(&mut self, r: u8, g: u8, b: u8, laptop: &mut device::RazerLaptop) {
         self.layers.clear();
+        self.custom_frame = true;
         self.render_board.set_kbd_colour(r, g, b);
         self.render_board.update_kbd(laptop);
         self.render_board.update_custom_mode(laptop);
@@ -293,6 +320,7 @@ impl EffectManager {
     /// (seeded from the current time) instead of adding a `rand` dependency for one button.
     pub fn randomize_custom(&mut self, laptop: &mut device::RazerLaptop) {
         self.layers.clear();
+        self.custom_frame = true;
         let mut seed = (get_millis() as u32)
             .wrapping_mul(2654435761)
             .wrapping_add(1);
