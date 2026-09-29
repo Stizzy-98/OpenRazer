@@ -379,11 +379,11 @@ impl Effect for Wheel {
 
     fn update(&mut self) -> board::KeyboardData {
         let rows = board::ROWS as f32;
-        let cols = board::KEYS_PER_ROW as f32;
+        let cols = board::cols() as f32;
         let cy = (rows - 1.0) / 2.0;
         let cx = (cols - 1.0) / 2.0;
         for row in 0..board::ROWS {
-            for col in 0..board::KEYS_PER_ROW {
+            for col in 0..board::cols() {
                 let dy = row as f32 - cy;
                 let dx = col as f32 - cx;
                 let angle = dy.atan2(dx); // -pi..pi
@@ -527,7 +527,10 @@ impl Effect for SoundBar {
             .map(|l| *l)
             .unwrap_or([0.0; crate::audio::BANDS]);
 
-        for (col, &level) in levels.iter().enumerate().take(board::KEYS_PER_ROW) {
+        // One frequency band per column, stretched across wider grids.
+        let cols = board::cols();
+        for col in 0..cols {
+            let level = levels[col * crate::audio::BANDS / cols];
             let exact = level * board::ROWS as f32;
             let full_rows = exact.floor() as usize;
             let partial_brightness = exact - full_rows as f32;
@@ -535,7 +538,7 @@ impl Effect for SoundBar {
             let base_color = match color_mode {
                 COLOR_MODE_STATIC => (sr, sg, sb),
                 COLOR_MODE_INTENSITY => intensity_gradient(level),
-                _ => hsv_to_rgb(col as f32 / board::KEYS_PER_ROW as f32, 1.0, 1.0),
+                _ => hsv_to_rgb(col as f32 / cols as f32, 1.0, 1.0),
             };
             let base_color = dim(base_color, brightness_limit);
 
@@ -725,7 +728,7 @@ fn randomize_all(kbd: &mut board::KeyboardData) {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     for row in 0..board::ROWS {
-        for col in 0..board::KEYS_PER_ROW {
+        for col in 0..board::cols() {
             kbd.set_key_colour(row, col, rng.r#gen(), rng.r#gen(), rng.r#gen());
         }
     }
@@ -798,22 +801,36 @@ impl Effect for Stars {
 /// RIPPLE KEYBOARD EFFECT
 /// Each key press sends a ring of light outward from that key across the keyboard, on black -
 /// the same software effect OpenRazer implements for Razer keyboards (their firmware has no
-/// native ripple). Args: [color_mode, r, g, b, speed]. COLOR_MODE_STATIC draws every ring in
-/// (r, g, b); COLOR_MODE_RAINBOW colors the ring by its distance from the key, so it sweeps
-/// through Wheel's hue order as it travels. Speed 1-4 sets how fast rings expand.
+/// native ripple). Args: [color_mode, r, g, b, speed]. RIPPLE_STATIC draws every ring in
+/// (r, g, b); rainbow (1) colors the ring by its distance from the key, so it sweeps through
+/// Wheel's hue order as it travels; RIPPLE_RANDOM gives each press its own random color (as in
+/// OpenRazer's random-colour ripple). Speed 1-4 sets how fast rings expand.
 ///
 pub struct Ripple {
     kbd: board::KeyboardData,
     args: Vec<u8>,
     presses: crate::keys::Presses,
-    /// Active rings: origin (row, col) and frames since the press.
-    ripples: Vec<(usize, usize, u32)>,
+    ripples: Vec<Ring>,
 }
 
+#[derive(Clone)]
+struct Ring {
+    row: usize,
+    col: usize,
+    /// Frames since the key press.
+    age: u32,
+    /// Ring color, or None to color by distance (rainbow).
+    color: Option<(u8, u8, u8)>,
+}
+
+/// Ripple color modes; any other value (1) is rainbow.
+pub const RIPPLE_STATIC: u8 = 2;
+pub const RIPPLE_RANDOM: u8 = 3;
 /// Width of the lit ring, in keys - matches OpenRazer's ripple.
 const RIPPLE_WIDTH: f32 = 2.0;
-/// Farthest a ring can be from its origin on a 6x16 board (corner to corner).
-const RIPPLE_MAX_DIST: f32 = 15.9;
+/// Distance over which a rainbow ring goes once around the color wheel (a 16-column keyboard's
+/// width), kept fixed so wider keyboards show the same gradient.
+const RIPPLE_RAINBOW_SPAN: f32 = 16.0;
 /// Oldest rings are dropped beyond this many, to bound per-frame work during fast typing.
 const RIPPLE_MAX_ACTIVE: usize = 24;
 
@@ -836,6 +853,18 @@ impl Ripple {
             _ => 32.0,
         }
     }
+
+    fn ring_color(&self) -> Option<(u8, u8, u8)> {
+        match self.args.first().copied() {
+            Some(RIPPLE_STATIC) => Some((
+                self.args.get(1).copied().unwrap_or(0),
+                self.args.get(2).copied().unwrap_or(255),
+                self.args.get(3).copied().unwrap_or(0),
+            )),
+            Some(RIPPLE_RANDOM) => Some(random_color()),
+            _ => None,
+        }
+    }
 }
 
 impl Effect for Ripple {
@@ -844,39 +873,42 @@ impl Effect for Ripple {
     }
 
     fn update(&mut self) -> board::KeyboardData {
-        if let Ok(mut p) = self.presses.lock() {
-            self.ripples
-                .extend(p.drain(..).map(|(row, col)| (row, col, 0)));
+        let pressed: Vec<(usize, usize)> = self
+            .presses
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for (row, col) in pressed {
+            let color = self.ring_color();
+            self.ripples.push(Ring {
+                row,
+                col,
+                age: 0,
+                color,
+            });
         }
         let excess = self.ripples.len().saturating_sub(RIPPLE_MAX_ACTIVE);
         self.ripples.drain(..excess);
 
-        let rainbow = self.args.first().copied() != Some(COLOR_MODE_STATIC);
-        let color = (
-            self.args.get(1).copied().unwrap_or(0),
-            self.args.get(2).copied().unwrap_or(255),
-            self.args.get(3).copied().unwrap_or(0),
-        );
         let keys_per_frame = self.keys_per_second() / super::ANIMATION_FPS as f32;
+        let cols = board::cols();
+        // Corner to corner: once a ring's trailing edge passes this, it's off the keyboard.
+        let max_dist = ((board::ROWS - 1) as f32).hypot((cols - 1) as f32);
 
         for row in 0..board::ROWS {
-            for col in 0..board::KEYS_PER_ROW {
+            for col in 0..cols {
                 let mut out = (0u8, 0u8, 0u8);
-                for &(r0, c0, age) in &self.ripples {
-                    let radius = age as f32 * keys_per_frame;
-                    let dist = ((row as f32 - r0 as f32).powi(2)
-                        + (col as f32 - c0 as f32).powi(2))
-                    .sqrt();
+                for ring in &self.ripples {
+                    let radius = ring.age as f32 * keys_per_frame;
+                    let dist = (row as f32 - ring.row as f32).hypot(col as f32 - ring.col as f32);
                     // Brightest at the leading edge, fading across the ring's width behind it.
                     let behind = radius - dist;
                     if !(0.0..RIPPLE_WIDTH).contains(&behind) {
                         continue;
                     }
-                    let base = if rainbow {
-                        hsv_to_rgb(dist / RIPPLE_MAX_DIST, 1.0, 1.0)
-                    } else {
-                        color
-                    };
+                    let base = ring
+                        .color
+                        .unwrap_or_else(|| hsv_to_rgb(dist / RIPPLE_RAINBOW_SPAN, 1.0, 1.0));
                     let (r, g, b) = dim(base, 1.0 - behind / RIPPLE_WIDTH);
                     out = (out.0.max(r), out.1.max(g), out.2.max(b));
                 }
@@ -884,11 +916,11 @@ impl Effect for Ripple {
             }
         }
 
-        for ripple in &mut self.ripples {
-            ripple.2 += 1;
+        for ring in &mut self.ripples {
+            ring.age += 1;
         }
         self.ripples
-            .retain(|&(_, _, age)| age as f32 * keys_per_frame < RIPPLE_MAX_DIST + RIPPLE_WIDTH);
+            .retain(|ring| ring.age as f32 * keys_per_frame < max_dist + RIPPLE_WIDTH);
         self.kbd
     }
 
@@ -921,5 +953,164 @@ impl Effect for Ripple {
 
     fn get_state(&mut self) -> Vec<u8> {
         self.kbd.get_curr_state()
+    }
+}
+
+///
+/// CPU TEMPERATURE KEYBOARD EFFECT
+/// The whole keyboard shows the CPU temperature as a color: blue at or below `cool` °C, through
+/// cyan, green and yellow, to red at or above `hot` °C (the idea of OpenRazer's
+/// cpu_temperature.py example). Args: [cool, hot]. The sensor is read once a second and the color
+/// eases toward it, so short spikes don't flash the keyboard.
+///
+pub struct CpuTemperature {
+    kbd: board::KeyboardData,
+    args: Vec<u8>,
+    ticks: u32,
+    /// Smoothed temperature being displayed, and the latest reading it eases toward.
+    shown: Option<f32>,
+    target: Option<f32>,
+}
+
+/// Hue for fully cool (blue); fully hot is 0 (red).
+const TEMP_COOL_HUE: f32 = 0.66;
+/// Fraction of the remaining gap closed each frame (~1 s to settle at 20 FPS).
+const TEMP_EASING: f32 = 0.15;
+
+impl CpuTemperature {
+    fn range(&self) -> (f32, f32) {
+        let cool = self.args.first().copied().unwrap_or(45) as f32;
+        let hot = (self.args.get(1).copied().unwrap_or(90) as f32).max(cool + 1.0);
+        (cool, hot)
+    }
+}
+
+impl Effect for CpuTemperature {
+    fn new(args: Vec<u8>) -> Box<dyn Effect> {
+        Box::new(CpuTemperature {
+            kbd: board::KeyboardData::new(),
+            args,
+            ticks: 0,
+            shown: None,
+            target: None,
+        })
+    }
+
+    fn update(&mut self) -> board::KeyboardData {
+        if self.ticks == 0 {
+            self.target = service::cpu_temperature().map(|t| t as f32).or(self.target);
+        }
+        self.ticks = (self.ticks + 1) % super::ANIMATION_FPS as u32;
+
+        let Some(target) = self.target else {
+            // No sensor: stay dark rather than show a meaningless color.
+            self.kbd.set_kbd_colour(0, 0, 0);
+            return self.kbd;
+        };
+        let shown = self
+            .shown
+            .map_or(target, |s| s + (target - s) * TEMP_EASING);
+        self.shown = Some(shown);
+
+        let (cool, hot) = self.range();
+        let heat = ((shown - cool) / (hot - cool)).clamp(0.0, 1.0);
+        let (r, g, b) = hsv_to_rgb(TEMP_COOL_HUE * (1.0 - heat), 1.0, 1.0);
+        self.kbd.set_kbd_colour(r, g, b);
+        self.kbd
+    }
+
+    fn get_name() -> &'static str
+    where
+        Self: Sized,
+    {
+        "CPU Temperature"
+    }
+
+    fn get_varargs(&mut self) -> &[u8] {
+        &self.args
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(CpuTemperature {
+            kbd: self.kbd,
+            args: self.args.clone(),
+            ticks: self.ticks,
+            shown: self.shown,
+            target: self.target,
+        })
+    }
+
+    fn save(&mut self) -> EffectSave {
+        EffectSave {
+            args: self.args.clone(),
+            name: String::from("CPU Temperature"),
+        }
+    }
+
+    fn get_state(&mut self) -> Vec<u8> {
+        self.kbd.get_curr_state()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(kbd: &mut board::KeyboardData, row: usize, col: usize) -> (u8, u8, u8) {
+        let k = kbd.get_key_at(row * board::MAX_COLS + col);
+        (k.red, k.green, k.blue)
+    }
+
+    #[test]
+    fn temperature_maps_cool_to_blue_and_hot_to_red() {
+        let mut fx = CpuTemperature {
+            kbd: board::KeyboardData::new(),
+            args: vec![45, 90],
+            ticks: 1, // skip the sensor read
+            shown: None,
+            target: Some(40.0),
+        };
+        let (r, _, b) = key(&mut fx.update(), 0, 0);
+        assert!(b > 200 && r < 20, "cool should be blue");
+
+        fx.shown = None;
+        fx.target = Some(95.0);
+        let (r, g, b) = key(&mut fx.update(), 0, 0);
+        assert!(r > 200 && g < 20 && b < 20, "hot should be red");
+    }
+
+    #[test]
+    fn ripple_rings_start_at_the_pressed_key_and_expire() {
+        let presses: crate::keys::Presses = Default::default();
+        let mut fx = Ripple::new_live(vec![RIPPLE_STATIC, 0, 255, 0, 4], presses.clone());
+        presses.lock().unwrap().push((3, 5));
+        let mut frame = fx.update();
+        assert_eq!(key(&mut frame, 3, 5), (0, 255, 0));
+        assert_eq!(key(&mut frame, 0, 15), (0, 0, 0));
+        // Fastest speed crosses a 6x16 keyboard in well under 2 s.
+        for _ in 0..40 {
+            frame = fx.update();
+        }
+        assert_eq!(key(&mut frame, 3, 5), (0, 0, 0));
+    }
+
+    #[test]
+    fn random_ripples_keep_one_color_per_press() {
+        let presses: crate::keys::Presses = Default::default();
+        let mut fx = Ripple {
+            kbd: board::KeyboardData::new(),
+            args: vec![RIPPLE_RANDOM, 0, 0, 0, 1],
+            presses: presses.clone(),
+            ripples: Vec::new(),
+        };
+        presses.lock().unwrap().extend([(2, 8), (4, 3)]);
+        fx.update();
+        let colors: Vec<_> = fx.ripples.iter().map(|r| r.color).collect();
+        assert!(colors.iter().all(Option::is_some));
+        fx.update();
+        assert_eq!(
+            colors,
+            fx.ripples.iter().map(|r| r.color).collect::<Vec<_>>()
+        );
     }
 }

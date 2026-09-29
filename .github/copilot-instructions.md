@@ -35,7 +35,7 @@ Razer Control — a GUI-only Linux application for controlling Razer Blade lapto
 
 **Config storage:** `~/.local/share/razercontrol/daemon.json` (AC/Battery profiles) and `effects.json` (active software effect layers).
 
-**Device database:** [data/devices/laptops.json](data/devices/laptops.json) — array of `{name, vid, pid, features[], fan[min,max]}`.
+**Device database:** [data/devices/laptops.json](data/devices/laptops.json) — array of `{name, vid, pid, features[], fan[min,max], matrix?[rows,cols]}` (`matrix` only with `per_key_rgb`).
 
 **App ID:** `io.github.stizzy98.openrazer` (GApplication ID, desktop file, icon).
 

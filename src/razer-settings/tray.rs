@@ -26,7 +26,7 @@ impl SensorState {
     fn read_fresh() -> Self {
         let nvidia = gpu_monitor::read_nvidia_telemetry();
         SensorState {
-            cpu_temp: read_cpu_temp(),
+            cpu_temp: service::cpu_temperature(),
             igpu_temp: read_igpu_temp(),
             dgpu_temp: nvidia.temperature,
             fan_speed: None, // requires daemon, skip in tray
@@ -236,36 +236,6 @@ impl ksni::Tray for RazerTray {
 }
 
 // --- Sensor reading functions (standalone, no daemon dependency) ---
-
-fn read_cpu_temp() -> Option<f64> {
-    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
-        for entry in entries.flatten() {
-            let name_path = entry.path().join("name");
-            if let Ok(name) = fs::read_to_string(&name_path) {
-                let name = name.trim();
-                if name == "k10temp" || name == "zenpower" || name == "coretemp" {
-                    let temp_path = entry.path().join("temp1_input");
-                    if let Ok(content) = fs::read_to_string(&temp_path)
-                        && let Ok(temp) = content.trim().parse::<f64>()
-                    {
-                        return Some(temp / 1000.0);
-                    }
-                }
-            }
-        }
-    }
-    for path in [
-        "/sys/class/thermal/thermal_zone0/temp",
-        "/sys/class/thermal/thermal_zone1/temp",
-    ] {
-        if let Ok(content) = fs::read_to_string(path)
-            && let Ok(temp) = content.trim().parse::<f64>()
-        {
-            return Some(temp / 1000.0);
-        }
-    }
-    None
-}
 
 fn read_igpu_temp() -> Option<f64> {
     if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {

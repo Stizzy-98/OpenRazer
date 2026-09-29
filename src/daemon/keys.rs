@@ -171,7 +171,7 @@ impl ReportParser {
             }
             _ => {}
         }
-        out.retain(|&(r, c)| r < board::ROWS && c < board::KEYS_PER_ROW);
+        out.retain(|&(r, c)| r < board::ROWS && c < board::cols());
         out
     }
 }

@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Was hardcoded to 90 (15 * 6) everywhere below before board.rs's KEYS_PER_ROW fix (15 -> 16,
-// see board.rs) - never actually exercised until now since the paint canvas bypasses this
-// mask/layer system entirely, but Wheel (an animated effect) is the first real user of it.
-pub const TOTAL_KEYS: usize = board::ROWS * board::KEYS_PER_ROW;
+/// Size of a layer's key mask: the widest grid, indexed `row * board::MAX_COLS + col`.
+pub const TOTAL_KEYS: usize = board::ROWS * board::MAX_COLS;
 
 // Was 10 (100ms/tick) - too slow for Sound Bar to look like a live meter rather than discrete
 // jumps. Doubling to 20 (50ms/tick) roughly doubles USB HID traffic for whichever per-key
@@ -113,14 +111,13 @@ impl EffectLayer {
                 return None;
             }
         };
-        if key_mask.len() != TOTAL_KEYS {
-            eprintln!(
-                "Invalid key count effect. Expected {}, found {}",
-                TOTAL_KEYS,
-                key_mask.len()
-            );
-            return None;
-        }
+        // Saves from before variable-width grids hold a 96-key mask. Layers have only ever been
+        // saved with every key enabled, so any other size is treated as the full keyboard.
+        let key_mask = if key_mask.len() == TOTAL_KEYS {
+            key_mask
+        } else {
+            vec![true; TOTAL_KEYS]
+        };
         let name: String = match serde_json::from_value(json["name"].clone()) {
             Ok(v) => v,
             Err(e) => {
@@ -144,6 +141,7 @@ impl EffectLayer {
             "Static Gradient" => Some(effects::StaticGradient::new(args)),
             "Software Breathing" => Some(effects::SoftBreathing::new(args)),
             "Stars" => Some(effects::Stars::new(args)),
+            "CPU Temperature" => Some(effects::CpuTemperature::new(args)),
             // Needs the daemon's live audio capture to construct - restored by the daemon's
             // startup path instead (see `restore_audio_meter` in daemon.rs).
             "Audio Meter" => return None,
@@ -270,20 +268,14 @@ impl EffectManager {
         b: u8,
         laptop: &mut device::RazerLaptop,
     ) -> bool {
-        // Client-supplied (0-255); anything past the 6x16 grid would index out of bounds and
-        // panic the daemon.
-        if index >= TOTAL_KEYS {
+        // Client-supplied `row * cols + col` (0-255); reject anything past the grid.
+        let cols = board::cols();
+        if index >= board::ROWS * cols {
             return false;
         }
         self.layers.clear();
-        self.render_board.set_key_at(
-            index,
-            board::KeyColour {
-                red: r,
-                green: g,
-                blue: b,
-            },
-        );
+        self.render_board
+            .set_key_colour(index / cols, index % cols, r, g, b);
         self.render_board.update_kbd(laptop);
         self.render_board.update_custom_mode(laptop);
         true
@@ -311,7 +303,7 @@ impl EffectManager {
             (seed & 0xFF) as u8
         };
         for row in 0..board::ROWS {
-            for col in 0..board::KEYS_PER_ROW {
+            for col in 0..board::cols() {
                 let (r, g, b) = (next_byte(), next_byte(), next_byte());
                 self.render_board.set_key_colour(row, col, r, g, b);
             }

@@ -255,6 +255,17 @@ impl DeviceManager {
         }
     }
 
+    /// Columns in the detected model's per-key lighting grid.
+    pub fn matrix_cols(&self) -> usize {
+        let Some(pid) = self.device.as_ref().map(|d| d.pid) else {
+            return 16;
+        };
+        self.supported_devices
+            .iter()
+            .find(|d| u16::from_str_radix(&d.pid, 16) == Ok(pid))
+            .map_or(16, |d| d.matrix_cols())
+    }
+
     /// Check whether the current device declares a given feature.
     pub fn device_has_feature(&self, feature: &str) -> bool {
         self.device
@@ -461,6 +472,25 @@ impl DeviceManager {
     }
 
     pub fn get_brightness(&mut self, ac: usize) -> u8 {
+        // For the active power state, trust the keyboard over the saved value: the Fn brightness
+        // keys change it without going through the daemon. Not while the lights are off for
+        // idle/screensaver, when the keyboard reads 0 on purpose.
+        let live = self
+            .get_device()
+            .filter(|l| l.get_ac_state() == ac && !l.is_screensaver())
+            .and_then(|l| l.read_brightness());
+        if let Some(value) = live
+            && let Some(config) = self.get_config()
+            && config.power[ac].brightness != value
+        {
+            config.power[ac].brightness = value;
+            if config.sync {
+                config.power[(ac + 1) & 0x01].brightness = value;
+            }
+            if let Err(e) = config.write_to_file() {
+                eprintln!("Error write config {:?}", e);
+            }
+        }
         if let Some(config) = self.get_ac_config(ac) {
             let val = config.brightness as u32;
             let mut perc = val * 100 * 100 / 255;
@@ -815,6 +845,10 @@ impl RazerLaptop {
         self.screensaver = active;
     }
 
+    pub fn is_screensaver(&self) -> bool {
+        self.screensaver
+    }
+
     pub fn set_config(&mut self, config: config::PowerConfig) -> bool {
         let mut ret: bool = false;
 
@@ -841,7 +875,7 @@ impl RazerLaptop {
         self.ac_state as usize
     }
 
-    pub fn get_ac_state(&mut self) -> usize {
+    pub fn get_ac_state(&self) -> usize {
         self.ac_state as usize
     }
 
@@ -899,23 +933,17 @@ impl RazerLaptop {
         }
     }
 
-    /// OpenRazer's razerkbd_driver.c reference shows this exact model (Blade 15 ADV Early 2022)
-    /// needs transaction id 0xFF for every standard-effect command, not the 0x1F RazerPacket::new
-    /// otherwise hardcodes for every device this daemon supports. Scoped to this one confirmed
-    /// model by name - the other ~49 supported devices are unverified against source and keep the
-    /// existing default rather than risk changing behavior nobody has checked.
-    fn standard_effect_transaction_id(&self) -> u8 {
-        if self.name == "Blade 15 Early 2022 Advanced" {
-            0xFF
-        } else {
-            0x1F
-        }
-    }
+    /// OpenRazer's razerkbd_driver.c sends every lighting command (standard effects, custom
+    /// frames, brightness) to every Blade laptop and the Razer Book with transaction id 0xFF,
+    /// not the 0x1F `RazerPacket::new` defaults to.
+    const LIGHTING_TRANSACTION_ID: u8 = 0xFF;
+    /// ...except custom-frame rows on the Blade Late 2016, which take 0x3F.
+    const BLADE_LATE_2016_PID: u16 = 0x0224;
 
     pub fn set_standard_effect(&mut self, effect_id: u8, params: Vec<u8>) -> bool {
         let mut report: RazerPacket =
             RazerPacket::new(0x03, 0x0a, Self::standard_effect_data_size(effect_id));
-        report.id = self.standard_effect_transaction_id();
+        report.id = Self::LIGHTING_TRANSACTION_ID;
         report.args[0] = effect_id; // effect id
         if !params.is_empty() {
             let len = params.len().min(79); // args[0] is effect_id, so max 79 param bytes
@@ -928,30 +956,32 @@ impl RazerLaptop {
         false
     }
 
+    /// Sends one row of the per-key frame: `data` is RGB for every column of the model's grid.
     pub fn set_custom_frame_data(&mut self, row: u8, data: Vec<u8>) {
-        // 48 = 16 columns * 3 bytes/pixel. end_col below (0x0f = 15) was already correct for a
-        // 16-column row (0-15 inclusive) - it was this length check (previously 45 = 15*3) that
-        // silently dropped the entire 16th column's data, matching OpenRazer's own
-        // MATRIX_DIMS = [6, 16] for this device.
-        if data.len() == 48 {
-            // OpenRazer's razer_chroma_standard_matrix_set_custom_frame reference starts the RGB
-            // payload at args[4] (header is exactly [frame_id, row, start_col, stop_col]) with
-            // data_size 0x46 - this previously used args[7]/0x34, a 3-byte offset bug that shifted
-            // every row's colors. Transaction id 0xFF confirmed for this device in the same source.
-            let mut report: RazerPacket = RazerPacket::new(0x03, 0x0b, 0x46);
-            report.id = self.standard_effect_transaction_id();
-            report.args[0] = 0xff;
-            report.args[1] = row;
-            report.args[2] = 0x00; // start col
-            report.args[3] = 0x0f; // end col (15 = 16 columns, 0-indexed inclusive)
-            report.args[4..(data.len() + 4)].copy_from_slice(&data[..]);
-            self.send_report(report);
+        let cols = data.len() / 3;
+        // args[4..] holds the RGB bytes and there are 80 args in total.
+        if cols == 0 || !data.len().is_multiple_of(3) || data.len() > 76 {
+            return;
         }
+        // Layout per OpenRazer's razer_chroma_standard_matrix_set_custom_frame: header
+        // [frame_id, row, start_col, stop_col], RGB from args[4], data_size fixed at 0x46.
+        let mut report: RazerPacket = RazerPacket::new(0x03, 0x0b, 0x46);
+        report.id = if self.pid == Self::BLADE_LATE_2016_PID {
+            0x3F
+        } else {
+            Self::LIGHTING_TRANSACTION_ID
+        };
+        report.args[0] = 0xff;
+        report.args[1] = row;
+        report.args[2] = 0x00; // start col
+        report.args[3] = (cols - 1) as u8; // stop col, inclusive
+        report.args[4..(data.len() + 4)].copy_from_slice(&data[..]);
+        self.send_report(report);
     }
 
     pub fn set_custom_frame(&mut self) -> bool {
         let mut report: RazerPacket = RazerPacket::new(0x03, 0x0a, 0x02);
-        report.id = self.standard_effect_transaction_id();
+        report.id = Self::LIGHTING_TRANSACTION_ID;
         report.args[0] = RazerLaptop::CUSTOMFRAME; // effect id
         report.args[1] = RazerLaptop::NOSTORE;
         if self.send_report(report).is_some() {
@@ -1198,16 +1228,71 @@ impl RazerLaptop {
         self.send_report(report).is_some()
     }
 
+    /// Keyboard backlight brightness (0-255). Uses the Blade laptop brightness command OpenRazer
+    /// uses for every Blade (class 0x0E), falling back to the generic LED brightness command.
+    /// On the Blade 15 Advanced (Early 2022) both drive the same setting.
     pub fn set_brightness(&mut self, brightness: u8) -> bool {
-        let mut report: RazerPacket = RazerPacket::new(0x03, 0x03, 0x03);
-        report.args[0] = RazerLaptop::VARSTORE;
-        report.args[1] = RazerLaptop::BACKLIGHT_LED;
-        report.args[2] = brightness;
+        let mut report = RazerPacket::new(0x0e, 0x04, 0x02);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        report.args[0] = 0x01;
+        report.args[1] = brightness;
         if self.send_report(report).is_some() {
             return true;
         }
 
-        false
+        let mut report: RazerPacket = RazerPacket::new(0x03, 0x03, 0x03);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        report.args[0] = RazerLaptop::VARSTORE;
+        report.args[1] = RazerLaptop::BACKLIGHT_LED;
+        report.args[2] = brightness;
+        self.send_report(report).is_some()
+    }
+
+    /// Current backlight brightness (0-255) as the keyboard reports it, which also reflects
+    /// changes made with the Fn brightness keys.
+    pub fn read_brightness(&mut self) -> Option<u8> {
+        let mut report = RazerPacket::new(0x0e, 0x84, 0x02);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        report.args[0] = 0x01;
+        if let Some(r) = self.send_report(report) {
+            return Some(r.args[1]);
+        }
+
+        let mut report = RazerPacket::new(0x03, 0x83, 0x03);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        report.args[0] = RazerLaptop::VARSTORE;
+        report.args[1] = RazerLaptop::BACKLIGHT_LED;
+        self.send_report(report).map(|r| r.args[2])
+    }
+
+    /// Keyboard firmware version, e.g. "v1.2".
+    pub fn read_firmware_version(&mut self) -> Option<String> {
+        let mut report = RazerPacket::new(0x00, 0x81, 0x02);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        self.send_report(report)
+            .map(|r| format!("v{}.{}", r.args[0], r.args[1]))
+    }
+
+    /// Physical keyboard layout id (see `service::keyboard_layout_name`).
+    pub fn read_keyboard_layout(&mut self) -> Option<u8> {
+        let mut report = RazerPacket::new(0x00, 0x86, 0x02);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        self.send_report(report).map(|r| r.args[0])
+    }
+
+    /// Serial number stored in the keyboard. Blade laptops generally leave this blank (all 0xFF)
+    /// and keep the serial in the BIOS instead, which only root can read - None then.
+    pub fn read_serial(&mut self) -> Option<String> {
+        let mut report = RazerPacket::new(0x00, 0x82, 0x16);
+        report.id = Self::LIGHTING_TRANSACTION_ID;
+        let r = self.send_report(report)?;
+        let serial: String = r.args[..22]
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
+        let serial = serial.trim().to_string();
+        (!serial.is_empty() && serial.chars().all(|c| c.is_ascii_graphic())).then_some(serial)
     }
 
     pub fn set_bho(&mut self, is_on: bool, threshold: u8) -> bool {

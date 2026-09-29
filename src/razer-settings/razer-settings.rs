@@ -421,6 +421,35 @@ fn set_ripple_effect(color_mode: u8, r: u8, g: u8, b: u8, speed: u8) -> Option<b
     }
 }
 
+fn set_temperature_effect(cool: u8, hot: u8) -> Option<bool> {
+    let response = send_data(comms::DaemonCommand::SetTemperatureEffect { cool, hot })?;
+    use comms::DaemonResponse::*;
+    match response {
+        SetTemperatureEffect { result } => Some(result),
+        response => {
+            println!("Instead of SetTemperatureEffect got {response:?}");
+            None
+        }
+    }
+}
+
+/// (firmware version, keyboard layout id, serial) as the keyboard reports them.
+fn get_device_info() -> Option<(String, u8, String)> {
+    let response = send_data(comms::DaemonCommand::GetDeviceInfo)?;
+    use comms::DaemonResponse::*;
+    match response {
+        GetDeviceInfo {
+            firmware,
+            layout,
+            serial,
+        } => Some((firmware, layout, serial)),
+        response => {
+            println!("Instead of GetDeviceInfo got {response:?}");
+            None
+        }
+    }
+}
+
 fn get_power(ac: bool) -> Option<(u8, u8, u8)> {
     let ac = if ac { 1 } else { 0 };
     let mut result = (0, 0, 0);
@@ -497,41 +526,6 @@ fn set_fan_speed(ac: bool, value: i32) -> Option<bool> {
             None
         }
     }
-}
-
-/// Read CPU temperature from hwmon (supports AMD k10temp/zenpower and Intel coretemp)
-fn get_cpu_temperature() -> Option<f64> {
-    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
-        for entry in entries.flatten() {
-            let name_path = entry.path().join("name");
-            if let Ok(name) = fs::read_to_string(&name_path) {
-                let name = name.trim();
-                if name == "k10temp" || name == "zenpower" || name == "coretemp" {
-                    let temp_path = entry.path().join("temp1_input");
-                    if let Ok(content) = fs::read_to_string(&temp_path)
-                        && let Ok(temp) = content.trim().parse::<f64>()
-                    {
-                        return Some(temp / 1000.0);
-                    }
-                }
-            }
-        }
-    }
-
-    let paths = [
-        "/sys/class/thermal/thermal_zone0/temp",
-        "/sys/class/thermal/thermal_zone1/temp",
-        "/sys/class/thermal/thermal_zone2/temp",
-    ];
-
-    for path in paths {
-        if let Ok(content) = fs::read_to_string(path)
-            && let Ok(temp) = content.trim().parse::<f64>()
-        {
-            return Some(temp / 1000.0);
-        }
-    }
-    None
 }
 
 /// Read system/CPU power consumption from RAPL (supports AMD and Intel)
@@ -885,7 +879,7 @@ fn create_system_monitor(shared_state: tray::SharedSensorState) -> gtk::Box {
 
     glib::timeout_add_local(Duration::from_secs(2), move || {
         let nvidia = gpu_monitor::read_nvidia_telemetry();
-        let cpu_temp = get_cpu_temperature();
+        let cpu_temp = service::cpu_temperature();
         let igpu_temp = get_igpu_temperature();
         let dgpu_temp = nvidia.temperature;
         let on_ac = check_if_running_on_ac_power();
@@ -1245,8 +1239,12 @@ fn main() {
         content_box.append(&header_bar);
         content_box.append(&scrolled_window);
 
+        // Firmware, layout and serial as the keyboard reports them (shown on Lighting and About)
+        let device_info = get_device_info();
+
         // Lighting page
-        let lighting_page = make_lighting_page(device.clone());
+        let layout = device_info.as_ref().map_or(0, |(_, layout, _)| *layout);
+        let lighting_page = make_lighting_page(device.clone(), layout);
         let page = view_stack.add_titled(&lighting_page.page, Some("Lighting"), "Lighting");
         page.set_icon_name(Some("display-brightness-symbolic"));
 
@@ -1263,7 +1261,7 @@ fn main() {
         // (GPU sections are now part of the Performance page)
 
         // About page
-        let about_page = make_about_page(device.clone());
+        let about_page = make_about_page(device.clone(), device_info);
         let page = view_stack.add_titled(&about_page.page, Some("About"), "About");
         page.set_icon_name(Some("help-about-symbolic"));
 
@@ -1797,7 +1795,69 @@ fn make_performance_page(device: SupportedDevice) -> SettingsPage {
 // Lighting page
 // ---------------------------------------------------------------------------
 
-fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
+/// Paint-grid key labels for a model with `cols` columns and keyboard layout id `layout`.
+///
+/// The 16-column positions were measured on a US Blade 15 Advanced (Early 2022) by lighting one
+/// LED at a time and pressing the key under it; column 0 has no key there. Most 16-column Blades
+/// share that layout. ISO layouts add the two keys US keyboards lack (next to Enter and next to
+/// Left Shift), and German/Swiss/French keyboards move a few letters. Other grid widths aren't
+/// mapped, so their cells are unlabeled.
+fn paint_key_labels(cols: usize, layout: u8) -> Vec<Vec<&'static str>> {
+    if cols != 16 {
+        return vec![vec![""; cols]; service::MATRIX_ROWS];
+    }
+    let mut labels: Vec<Vec<&'static str>> = [
+        [
+            "", "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+            "Del", "Pwr",
+        ],
+        [
+            "", "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "", "Bksp",
+        ],
+        [
+            "", "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "", "\\",
+        ],
+        [
+            "", "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "", "", "Enter",
+        ],
+        [
+            "", "Shift", "", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "", "", "Shift",
+        ],
+        [
+            "", "Ctrl", "Fn", "Super", "", "Alt", "", "Space", "", "AltGr", "Menu", "Ctrl", "←",
+            "↑", "→", "↓",
+        ],
+    ]
+    .iter()
+    .map(|row| row.to_vec())
+    .collect();
+
+    // ISO layouts (everything known except US and Japanese).
+    if !matches!(layout, 0x00 | 0x01 | 0x81 | 0x0C) {
+        labels[3][13] = "#";
+        labels[4][2] = "\\";
+    }
+    match layout {
+        // QWERTZ
+        0x03 | 0x0F => {
+            labels[2][7] = "Z";
+            labels[4][3] = "Y";
+        }
+        // AZERTY
+        0x04 => {
+            labels[2][2] = "A";
+            labels[2][3] = "Z";
+            labels[3][2] = "Q";
+            labels[3][11] = "M";
+            labels[4][3] = "W";
+            labels[4][9] = ",";
+        }
+        _ => {}
+    }
+    labels
+}
+
+fn make_lighting_page(device: SupportedDevice, layout: u8) -> SettingsPage {
     let settings_page = SettingsPage::new();
 
     // AC / Battery toggle (affects brightness + logo only)
@@ -1882,6 +1942,9 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     // Ripple is also a software effect - rings spreading out from each key press (see
     // kbd::effects::Ripple) - sent via its own SetRippleEffect command.
     const RIPPLE: u32 = 10;
+    // CPU Temperature is also a software effect - the whole keyboard colored by CPU temperature
+    // (see kbd::effects::CpuTemperature) - sent via its own SetTemperatureEffect command.
+    const TEMPERATURE: u32 = 11;
     // Real firmware "type" byte for Breathing/Starlight, confirmed against OpenRazer's
     // razerchromacommon.c (razer_chroma_standard_matrix_effect_{breathing,starlight}_*): the
     // wire value is 1/2/3, NOT 0-indexed - sending 0 for "Single" hit an unrecognized type and
@@ -1918,60 +1981,75 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     /// visibility rules only ever live in one place.
     /// `ripple_static` is whether Ripple's own color-mode combo is on Static (it only needs a
     /// color then).
-    fn visible_for(
-        effect: u32,
-        mode: u32,
-        ripple_static: bool,
-    ) -> (bool, bool, bool, bool, bool, bool, bool, bool, bool) {
-        // (mode_combo, color1, color2, direction_combo, speed_slider, wheel_speed_slider, sound_bar_mode_combo, stars_speed_slider, ripple_rows)
+    /// Which optional rows an (effect, color-mode) combination shows.
+    #[derive(Default)]
+    struct Visible {
+        mode: bool,
+        color1: bool,
+        color2: bool,
+        direction: bool,
+        speed: bool,
+        wheel_speed: bool,
+        sound_bar: bool,
+        stars_speed: bool,
+        ripple: bool,
+        temperature: bool,
+    }
+
+    /// `ripple_static` is whether Ripple's own color-mode combo is on Static (it only needs a
+    /// color then).
+    fn visible_for(effect: u32, mode: u32, ripple_static: bool) -> Visible {
+        let breathing_like = Visible {
+            mode: true,
+            color1: mode != MODE_RANDOM,
+            color2: mode == MODE_DUAL,
+            ..Default::default()
+        };
         match effect {
-            OFF | SPECTRUM => (
-                false, false, false, false, false, false, false, false, false,
-            ),
-            STATIC => (false, true, false, false, false, false, false, false, false),
-            WAVE => (false, false, false, true, false, false, false, false, false),
-            REACTIVE => (false, true, false, false, true, false, false, false, false),
-            BREATHING => (
-                true,
-                mode != MODE_RANDOM,
-                mode == MODE_DUAL,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-            ),
-            STARLIGHT => (
-                true,
-                mode != MODE_RANDOM,
-                mode == MODE_DUAL,
-                false,
-                true,
-                false,
-                false,
-                false,
-                false,
-            ),
-            WHEEL => (false, false, false, true, false, true, false, false, false),
+            STATIC => Visible {
+                color1: true,
+                ..Default::default()
+            },
+            WAVE => Visible {
+                direction: true,
+                ..Default::default()
+            },
+            REACTIVE => Visible {
+                color1: true,
+                speed: true,
+                ..Default::default()
+            },
+            BREATHING => breathing_like,
+            STARLIGHT => Visible {
+                speed: true,
+                ..breathing_like
+            },
+            WHEEL => Visible {
+                direction: true,
+                wheel_speed: true,
+                ..Default::default()
+            },
             // color1 stays visible regardless of Rainbow/Static/VU sub-mode - harmless when
             // unused (Rainbow/VU ignore it), simpler than a second layer of conditional visibility.
-            SOUNDBAR => (false, true, false, false, false, false, true, false, false),
-            STARS => (false, false, false, false, false, false, false, true, false),
-            RIPPLE => (
-                false,
-                ripple_static,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                true,
-            ),
-            _ => (
-                false, false, false, false, false, false, false, false, false,
-            ),
+            SOUNDBAR => Visible {
+                color1: true,
+                sound_bar: true,
+                ..Default::default()
+            },
+            STARS => Visible {
+                stars_speed: true,
+                ..Default::default()
+            },
+            RIPPLE => Visible {
+                color1: ripple_static,
+                ripple: true,
+                ..Default::default()
+            },
+            TEMPERATURE => Visible {
+                temperature: true,
+                ..Default::default()
+            },
+            _ => Visible::default(),
         }
     }
 
@@ -1990,6 +2068,7 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
             "Audio Meter",
             "Stars",
             "Ripple",
+            "CPU Temperature",
         ],
         STATIC,
     );
@@ -2153,12 +2232,12 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     stars_speed_slider.add_mark(4.0, Some("4"));
     effects_section.add_row(&stars_speed_slider.container);
 
-    // Ripple's color mode - wire values 1=Rainbow/2=Static, same as Audio Meter's combo.
+    // Ripple's color mode - wire values 1=Rainbow/2=Static/3=Random (list index + 1).
     const RIPPLE_MODE_STATIC: u32 = 1;
     let ripple_mode_combo = make_combo_row(
         "Color Mode",
-        "One color, or a rainbow that shifts through the color wheel as each ring spreads",
-        &["Rainbow", "Static"],
+        "A rainbow that shifts through the color wheel as each ring spreads, one color, or a random color for every key press",
+        &["Rainbow", "Static", "Random"],
         RIPPLE_MODE_STATIC,
     );
     effects_section.add_row(&ripple_mode_combo);
@@ -2170,6 +2249,26 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     ripple_speed_slider.add_mark(3.0, Some("3"));
     ripple_speed_slider.add_mark(4.0, Some("4"));
     effects_section.add_row(&ripple_speed_slider.container);
+
+    // CPU Temperature: blue at or below "Cool At", red at or above "Hot At".
+    let temp_cool_slider = SliderRow::new(
+        "Cool At",
+        "Temperature (°C) at or below which the keyboard is fully blue",
+        30.0,
+        80.0,
+        1.0,
+        45.0,
+    );
+    effects_section.add_row(&temp_cool_slider.container);
+    let temp_hot_slider = SliderRow::new(
+        "Hot At",
+        "Temperature (°C) at or above which the keyboard is fully red",
+        50.0,
+        100.0,
+        1.0,
+        90.0,
+    );
+    effects_section.add_row(&temp_hot_slider.container);
 
     let apply_visibility = {
         let mode_combo = mode_combo.clone();
@@ -2187,25 +2286,28 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
         let stars_speed_container = stars_speed_slider.container.clone();
         let ripple_mode_combo = ripple_mode_combo.clone();
         let ripple_speed_container = ripple_speed_slider.container.clone();
+        let temp_cool_container = temp_cool_slider.container.clone();
+        let temp_hot_container = temp_hot_slider.container.clone();
         move |effect: u32, mode: u32| {
             let ripple_static = ripple_mode_combo.selected() == RIPPLE_MODE_STATIC;
-            let (m, c1, c2, dir, speed, wheel, soundbar, stars, ripple) =
-                visible_for(effect, mode, ripple_static);
-            mode_combo.set_visible(m);
-            color1_row.set_visible(c1);
-            color1_quick.set_visible(c1);
-            color2_row.set_visible(c2);
-            color2_quick.set_visible(c2);
-            direction_combo.set_visible(dir);
-            speed_container.set_visible(speed);
-            wheel_speed_container.set_visible(wheel);
-            sound_bar_mode_combo.set_visible(soundbar);
-            sensitivity_container.set_visible(soundbar);
-            decay_container.set_visible(soundbar);
-            brightness_limit_container.set_visible(soundbar);
-            stars_speed_container.set_visible(stars);
-            ripple_mode_combo.set_visible(ripple);
-            ripple_speed_container.set_visible(ripple);
+            let v = visible_for(effect, mode, ripple_static);
+            mode_combo.set_visible(v.mode);
+            color1_row.set_visible(v.color1);
+            color1_quick.set_visible(v.color1);
+            color2_row.set_visible(v.color2);
+            color2_quick.set_visible(v.color2);
+            direction_combo.set_visible(v.direction);
+            speed_container.set_visible(v.speed);
+            wheel_speed_container.set_visible(v.wheel_speed);
+            sound_bar_mode_combo.set_visible(v.sound_bar);
+            sensitivity_container.set_visible(v.sound_bar);
+            decay_container.set_visible(v.sound_bar);
+            brightness_limit_container.set_visible(v.sound_bar);
+            stars_speed_container.set_visible(v.stars_speed);
+            ripple_mode_combo.set_visible(v.ripple);
+            ripple_speed_container.set_visible(v.ripple);
+            temp_cool_container.set_visible(v.temperature);
+            temp_hot_container.set_visible(v.temperature);
         }
     };
     apply_visibility(STATIC, MODE_SINGLE);
@@ -2322,6 +2424,8 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
         let stars_speed_ref = stars_speed_slider.scale.clone();
         let ripple_mode_ref = ripple_mode_combo.clone();
         let ripple_speed_ref = ripple_speed_slider.scale.clone();
+        let temp_cool_ref = temp_cool_slider.scale.clone();
+        let temp_hot_ref = temp_hot_slider.scale.clone();
         let color1_btn = color1.button.clone();
         let color2_btn = color2.button.clone();
         apply_button.connect_clicked(move |btn| {
@@ -2383,6 +2487,8 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
                 let color_mode = ripple_mode_ref.selected() as u8 + 1;
                 let ripple_speed = ripple_speed_ref.value() as u8;
                 set_ripple_effect(color_mode, r1, g1, b1, ripple_speed)
+            } else if effect == TEMPERATURE {
+                set_temperature_effect(temp_cool_ref.value() as u8, temp_hot_ref.value() as u8)
             } else {
                 let name = EFFECT_NAMES[effect as usize];
                 set_standard_effect(name, params)
@@ -2409,54 +2515,27 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     // Bypasses SetStandardEffect entirely: SetCustomKey/FillCustomFrame drive the daemon's
     // EffectManager::set_custom_key/fill_custom directly (per-key custom frame HID reports),
     // which requires the device's "per_key_rgb" feature flag to be on (see laptops.json).
-    const PAINT_ROWS: usize = 6;
-    const PAINT_COLS: usize = 16;
-    const PAINT_KEYS: usize = PAINT_ROWS * PAINT_COLS;
-
-    // Best-effort labels for a standard non-numpad US Blade layout. There is no authoritative
-    // per-key row/col map for this exact model anywhere (checked OpenRazer's driver and daemon
-    // source - only a desktop 22-column BlackWidow layout is documented there), so this is a
-    // reconstruction from the well-known general layout, not a verified source. Cells marked "?"
-    // are ones I have no real basis to guess (mainly the top-right cluster and a few row-end
-    // slots) - click one on the real keyboard and let me know what it actually is so it can be
-    // corrected, rather than trusting an unconfirmed label.
-    const KEY_LABELS: [[&str; 16]; 6] = [
-        [
-            "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-            "PrtSc?", "Ins?", "Pwr?",
-        ],
-        [
-            "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Bksp", "?", "?",
-        ],
-        [
-            "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "?", "?",
-        ],
-        [
-            "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter", "?", "?", "?",
-        ],
-        [
-            "Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "?", "Up?", "?",
-            "?",
-        ],
-        [
-            "Ctrl", "Win", "Alt", "Space", "Space", "Space", "Space", "Space", "AltGr", "Fn",
-            "Ctx", "Ctrl", "Left?", "Down?", "Right?", "?",
-        ],
-    ];
+    let paint_cols = device.matrix_cols();
+    let paint_keys = service::MATRIX_ROWS * paint_cols;
+    let key_labels = paint_key_labels(paint_cols, layout);
 
     let paint_section = settings_page.add_section(Some("Per-Key Painting"));
+    // Per-key painting needs the per-key frame, which some models don't have.
+    paint_section
+        .group
+        .set_visible(device.has_feature("per_key_rgb"));
 
     let paint_color = ColorRow::new("Paint Color", "Color used when you click a key");
     paint_section.add_row(&paint_color.row);
     let paint_color_quick = make_quick_colors_row(&paint_color.button, "paint");
     paint_section.add_row(&paint_color_quick);
 
-    // Row-major order (index = row * PAINT_COLS + col), matching board::KeyboardData::get_curr_state().
-    let key_colors: Rc<RefCell<[(u8, u8, u8); PAINT_KEYS]>> =
-        Rc::new(RefCell::new([(0, 0, 0); PAINT_KEYS]));
+    // Row-major order (index = row * paint_cols + col), matching board::KeyboardData::get_curr_state().
+    let key_colors: Rc<RefCell<Vec<(u8, u8, u8)>>> =
+        Rc::new(RefCell::new(vec![(0, 0, 0); paint_keys]));
     if let Some(rgb) = get_keyboard_rgb() {
         let mut kc = key_colors.borrow_mut();
-        for i in 0..PAINT_KEYS.min(rgb.len() / 3) {
+        for i in 0..paint_keys.min(rgb.len() / 3) {
             kc[i] = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
         }
     }
@@ -2470,7 +2549,7 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
         );
     }
 
-    fn rebuild_paint_css(provider: &gtk::CssProvider, colors: &[(u8, u8, u8); PAINT_KEYS]) {
+    fn rebuild_paint_css(provider: &gtk::CssProvider, colors: &[(u8, u8, u8)]) {
         let mut css = String::from(
             ".paint-key label { font-size: 8px; color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000; }\n",
         );
@@ -2492,17 +2571,18 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
     paint_grid.set_margin_end(12);
     paint_grid.set_halign(gtk::Align::Start);
 
-    for (row, labels) in KEY_LABELS.iter().enumerate() {
+    for (row, labels) in key_labels.iter().enumerate() {
         for (col, &label) in labels.iter().enumerate() {
-            let index = row * PAINT_COLS + col;
+            let index = row * paint_cols + col;
             let cell = gtk::Button::with_label(label);
             cell.add_css_class("paint-key");
             cell.add_css_class(&format!("paint-key-{index}"));
-            cell.set_tooltip_text(Some(if label == "?" {
-                "Unlabeled key position"
+            let tooltip = if label.is_empty() {
+                format!("Row {}, column {}", row + 1, col + 1)
             } else {
-                label
-            }));
+                label.to_string()
+            };
+            cell.set_tooltip_text(Some(&tooltip));
             let key_colors = key_colors.clone();
             let paint_color_btn = paint_color.button.clone();
             let provider = paint_css_provider.clone();
@@ -2548,7 +2628,7 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
                 (c.green() * 255.0) as u8,
                 (c.blue() * 255.0) as u8,
             );
-            *key_colors.borrow_mut() = [(r, g, b); PAINT_KEYS];
+            key_colors.borrow_mut().fill((r, g, b));
             rebuild_paint_css(&provider, &key_colors.borrow());
             fill_custom_frame(r, g, b);
         });
@@ -2557,7 +2637,7 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
         let key_colors = key_colors.clone();
         let provider = paint_css_provider.clone();
         clear_all_btn.connect_clicked(move |_| {
-            *key_colors.borrow_mut() = [(0, 0, 0); PAINT_KEYS];
+            key_colors.borrow_mut().fill((0, 0, 0));
             rebuild_paint_css(&provider, &key_colors.borrow());
             fill_custom_frame(0, 0, 0);
         });
@@ -2571,7 +2651,7 @@ fn make_lighting_page(device: SupportedDevice) -> SettingsPage {
             randomize_custom_frame();
             if let Some(rgb) = get_keyboard_rgb() {
                 let mut kc = key_colors.borrow_mut();
-                for i in 0..PAINT_KEYS.min(rgb.len() / 3) {
+                for i in 0..paint_keys.min(rgb.len() / 3) {
                     kc[i] = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
                 }
                 rebuild_paint_css(&provider, &kc);
@@ -2772,7 +2852,10 @@ fn gpu_mode_description(index: u32) -> &'static str {
 // About page
 // ---------------------------------------------------------------------------
 
-fn make_about_page(device: SupportedDevice) -> SettingsPage {
+fn make_about_page(
+    device: SupportedDevice,
+    device_info: Option<(String, u8, String)>,
+) -> SettingsPage {
     let page = SettingsPage::new();
 
     // Application Info Section
@@ -2811,6 +2894,39 @@ fn make_about_page(device: SupportedDevice) -> SettingsPage {
     row.set_subtitle("Minimum to maximum fan speed");
     section.add_row(&row.row);
 
+    let add_info_row = |title: &str, subtitle: &str, value: &str| {
+        let label = gtk::Label::new(Some(value));
+        label.set_selectable(true);
+        let row = SettingsRow::new(title, &label);
+        row.set_subtitle(subtitle);
+        section.add_row(&row.row);
+    };
+    if device.has_feature("per_key_rgb") {
+        let [rows, cols] = [service::MATRIX_ROWS, device.matrix_cols()];
+        add_info_row(
+            "Lighting Grid",
+            "Per-key LEDs, rows by columns",
+            &format!("{rows} × {cols}"),
+        );
+    }
+    let (firmware, layout, serial) = device_info.unwrap_or_default();
+    if !firmware.is_empty() {
+        add_info_row("Keyboard Firmware", "Reported by the keyboard", &firmware);
+    }
+    if let Some(name) = service::keyboard_layout_name(layout) {
+        add_info_row(
+            "Keyboard Layout",
+            "Physical layout reported by the keyboard",
+            name,
+        );
+    }
+    if !serial.is_empty() {
+        add_info_row("Serial Number", "Stored in the keyboard", &serial);
+    }
+    if let Ok(bios) = fs::read_to_string("/sys/class/dmi/id/bios_version") {
+        add_info_row("BIOS Version", "System firmware", bios.trim());
+    }
+
     // About Section
     let section = page.add_section(Some("About"));
 
@@ -2823,9 +2939,7 @@ fn make_about_page(device: SupportedDevice) -> SettingsPage {
     let description = gtk::Label::new(Some(
         "Open-source control center for Razer laptops on Linux.\n\
         Manage power profiles, fan speeds, keyboard lighting, and more.\n\n\
-        \u{26A0}\u{FE0F} Tested on: Fedora Linux\n\
-        Should work on Ubuntu and similar distributions.\n\
-        If issues occur, please report them on GitHub.",
+        Tested on a Razer Blade 15 Advanced (Early 2022) running Omarchy.",
     ));
     description.set_wrap(true);
     description.set_justify(gtk::Justification::Center);

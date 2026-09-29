@@ -25,6 +25,19 @@
   static color or a rainbow that shifts through the color wheel with distance, with a 1–4 speed
   slider. Key presses are read from the keyboard's own HID interface (no `input` group needed)
   only while Ripple is active, and only grid positions are kept
+- **Per-key lighting on 37 models** (was 2): the per-key grid size now comes from each model's
+  device entry (6 × 16 up to 6 × 25, from OpenRazer's device tables), so Wheel, Audio Meter,
+  Stars, Ripple, CPU Temperature, and painting work across them. The paint grid is sized to the
+  model and hidden on models without per-key lighting
+- **CPU Temperature effect**: the whole keyboard shows CPU temperature from blue (cool) to red
+  (hot), with adjustable Cool At / Hot At temperatures
+- **Ripple random color mode**: each key press gets its own random color
+- **Keyboard layout detection**: paint-grid key labels match the keyboard's reported layout
+  (US, ISO layouts, QWERTZ, AZERTY), using positions measured on real hardware
+- **Device details** on the About page: keyboard firmware version, layout, lighting grid size,
+  and BIOS version (plus the keyboard's serial number on models that store one)
+- Brightness uses the Blade backlight command (falling back to the generic one) and is read back
+  from the keyboard, so changes made with the Fn keys show up in the app
 - Lighting is now the first tab
 - Launching the app while it's already open brings the existing window to the front instead of
   starting a second copy
@@ -40,6 +53,11 @@
 - The app is GUI-only; `razer-cli` remains as an internal helper for the desktop widgets
 - No donation prompts and no update checkers in the app or the KDE widget
 - Removed the unused Blade 16 2025 thermal-safety module and the non-functional C++ KDE applet
+- Lighting commands use transaction id 0xFF on every model, as OpenRazer does for all Blade
+  laptops (previously only the Blade 15 Advanced Early 2022)
+- Device list cross-checked against OpenRazer: removed a duplicate Blade 15 Advanced (Early 2022)
+  entry, and dropped the logo toggle on 15 models OpenRazer lists without logo control; a test
+  now checks the list for duplicate PIDs, missing udev entries, and invalid grid sizes
 
 ### Security
 

@@ -66,7 +66,8 @@ BarWidget {
     { label: "Wheel", action: function() { run(["wheel", "1", "50"]) } },
     { label: "Audio Meter", action: function() { run(["audio-meter", "1", "0", "255", "0", "100", "30", "100"]) } },
     { label: "Stars", action: function() { run(["stars", "2"]) } },
-    { label: "Ripple", action: function() { run(["ripple", "1", "0", "0", "0", "3"]) } }
+    { label: "Ripple", action: function() { run(["ripple", "1", "0", "0", "0", "3"]) } },
+    { label: "CPU Temperature", action: function() { run(["temperature", "45", "90"]) } }
   ]
 
   function activateCursor() {

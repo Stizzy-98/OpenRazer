@@ -4,17 +4,27 @@ use crate::driver_sysfs;
 use crate::device;
 use std::cmp::Ordering;
 use std::ops;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 // -- RGB Key channel --
 
-// OpenRazer's official hardware/keyboards.py declares MATRIX_DIMS = [6, 16] for this exact
-// model (and for the Blade 14 2022, the only other per_key_rgb device this daemon has) - this
-// was previously 15, silently dropping the entire 16th column from every row's HID write
-// (confirmed as the cause of several real keys never lighting up: the report's own end_col
-// byte in device.rs was already 0x0f = column 15, i.e. 16 columns 0-15 inclusive, but this
-// constant and the row-buffer size check never matched that).
-pub const KEYS_PER_ROW: usize = 16;
-pub const ROWS: usize = 6;
+// Every supported model's grid has 6 rows; the column count varies by model (16 on most Blades,
+// up to 25 on the Blade Pro 2017 - from OpenRazer's MATRIX_DIMS). Frames are stored at the widest
+// size, and only the detected model's columns are rendered and sent (see `cols`).
+pub const ROWS: usize = service::MATRIX_ROWS;
+pub const MAX_COLS: usize = service::MAX_MATRIX_COLS;
+
+static COLS: AtomicUsize = AtomicUsize::new(16);
+
+/// Columns in the detected model's per-key grid.
+pub fn cols() -> usize {
+    COLS.load(AtomicOrdering::Relaxed)
+}
+
+/// Set once at startup from the detected model's device-list entry.
+pub fn set_cols(cols: usize) {
+    COLS.store(cols.clamp(1, MAX_COLS), AtomicOrdering::Relaxed);
+}
 
 #[derive(Copy, Clone, Debug)]
 /// Represents the colour channels for a key
@@ -136,9 +146,9 @@ impl PartialOrd for AnimatorKeyColour {
 }
 
 #[derive(Copy, Clone, Debug)]
-/// Represents a horizontal row of 15 keys on the keyboard
+/// Represents a horizontal row of keys on the keyboard
 pub struct RowData {
-    keys: [KeyColour; KEYS_PER_ROW],
+    keys: [KeyColour; MAX_COLS],
 }
 
 impl RowData {
@@ -149,7 +159,7 @@ impl RowData {
                 red: 255,
                 green: 255,
                 blue: 255,
-            }; KEYS_PER_ROW],
+            }; MAX_COLS],
         }
     }
 
@@ -175,13 +185,13 @@ impl RowData {
     /// * g - Green channel value
     /// * b - Blue channel value
     pub fn set_row_color(&mut self, r: u8, g: u8, b: u8) {
-        (0..KEYS_PER_ROW).for_each(|x| self.set_key_color(x, r, g, b)) // Sets the entire row
+        (0..cols()).for_each(|x| self.set_key_color(x, r, g, b)) // Sets the entire row
     }
 
     pub fn get_row_data(&mut self) -> Vec<u8> {
         // *3 as itll be the RGB values
-        let mut v = Vec::<u8>::with_capacity(3 * KEYS_PER_ROW);
-        self.keys.iter().for_each(|k| {
+        let mut v = Vec::<u8>::with_capacity(3 * cols());
+        self.keys[..cols()].iter().for_each(|k| {
             v.push(k.red);
             v.push(k.green);
             v.push(k.blue);
@@ -219,7 +229,7 @@ impl KeyboardData {
         if row >= ROWS {
             return;
         }
-        if col >= KEYS_PER_ROW {
+        if col >= cols() {
             return;
         }
         self.rows[row].set_key_color(col, r, g, b)
@@ -227,7 +237,7 @@ impl KeyboardData {
 
     /// Sets a vertical column on the keyboard to a colour
     pub fn set_col_colour(&mut self, col: usize, r: u8, g: u8, b: u8) {
-        if col >= KEYS_PER_ROW {
+        if col >= cols() {
             return;
         }
         for row_id in 0..ROWS {
@@ -242,18 +252,19 @@ impl KeyboardData {
         }
     }
 
-    /// Returns a specific key
+    /// Returns a specific key. `index` is `row * MAX_COLS + col` (the layer-mask layout).
     pub fn get_key_at(self, index: usize) -> KeyColour {
-        self.rows[index / KEYS_PER_ROW].keys[index % KEYS_PER_ROW]
+        self.rows[index / MAX_COLS].keys[index % MAX_COLS]
     }
 
     /// Internal function used only for the combining of effect layers
     pub fn set_key_at(&mut self, index: usize, col: KeyColour) {
-        self.rows[index / KEYS_PER_ROW].keys[index % KEYS_PER_ROW] = col
+        self.rows[index / MAX_COLS].keys[index % MAX_COLS] = col
     }
 
+    /// The visible frame, row by row, `cols()` keys per row.
     pub fn get_curr_state(&mut self) -> Vec<u8> {
-        let mut all_vals = Vec::<u8>::with_capacity(3 * KEYS_PER_ROW * ROWS);
+        let mut all_vals = Vec::<u8>::with_capacity(3 * cols() * ROWS);
         for row in self.rows.iter_mut() {
             all_vals.extend(&row.get_row_data());
         }

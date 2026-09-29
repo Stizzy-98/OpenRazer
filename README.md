@@ -12,8 +12,8 @@ It installs as the `openrazer` package and shows up in your app launcher as **Ra
 
 | Feature | Description |
 |---|---|
-| Keyboard lighting | Off, Static, Wave, Breathing, Reactive, Spectrum, Starlight, Wheel, Audio Meter, Stars, Ripple, plus brightness |
-| Per-key painting | Click-to-paint 96-key grid with Fill All, Random All, and Clear All |
+| Keyboard lighting | Off, Static, Wave, Breathing, Reactive, Spectrum, Starlight, Wheel, Audio Meter, Stars, Ripple, CPU Temperature, plus brightness |
+| Per-key painting | Click-to-paint grid sized to your model (6 × 16 on most Blades), with key labels for your keyboard layout, plus Fill All, Random All, and Clear All |
 | Fan control | Automatic, or a fixed RPM within your model's range |
 | Power profiles | Balanced, Gaming, Creator, Silent, or Custom with separate CPU/GPU boost |
 | Battery health | Cap charging at 50–80% to extend battery lifespan |
@@ -21,6 +21,7 @@ It installs as the `openrazer` package and shows up in your app launcher as **Ra
 | System monitor | Live CPU/iGPU/dGPU temperatures, power draw, utilization, and battery |
 | Omarchy theming | Picks up your active Omarchy theme's colors and font |
 | Desktop widgets | An Omarchy bar widget and a KDE Plasma widget for quick access |
+| Device details | Keyboard firmware version, keyboard layout, lighting grid size, and BIOS version on the About page |
 
 **Lighting notes**
 
@@ -31,12 +32,19 @@ It installs as the `openrazer` package and shows up in your app launcher as **Ra
   sensitivity, decay, and brightness, colored as Rainbow, Static, or Intensity Gradient.
 - **Stars** re-rolls every key to a random color on an interval. Speed 1–4 maps to
   1.00 / 0.75 / 0.50 / 0.25 seconds.
-- **Ripple** sends a ring of light outward from each key you press, in one static color or a
-  rainbow that moves through the color wheel as the ring spreads. Speed 1–4 sets how fast the
-  rings travel. While Ripple is active, the daemon reads the keyboard's key-press reports to find
+- **Ripple** sends a ring of light outward from each key you press, in one static color, a
+  rainbow that moves through the color wheel as the ring spreads, or a random color for every
+  press. Speed 1–4 sets how fast the rings travel. While Ripple is active, the daemon reads the keyboard's key-press reports to find
   where each ring starts. It keeps only the key's position on the lighting grid: key codes are
   never logged, saved, or sent anywhere, and the keyboard stops being read as soon as you switch
   to another effect.
+- **CPU Temperature** colors the whole keyboard by CPU temperature: blue at or below the
+  "Cool At" temperature, through green and yellow, to red at or above "Hot At". The color
+  eases between readings so brief spikes don't flash the keyboard.
+- **Brightness** follows the keyboard: if you change it with the Fn keys, the app shows the new
+  level and keeps it.
+- Per-key effects (Wheel, Audio Meter, Stars, Ripple, CPU Temperature, and painting) need a model
+  with per-key lighting; see [Supported Devices](#supported-devices).
 - Open an issue if you'd like to see another lighting effect not listed.
 
 **Known issues**
@@ -46,7 +54,10 @@ It installs as the `openrazer` package and shows up in your app launcher as **Ra
 
 ## Supported Devices
 
-Supports 50 Razer laptops (but only tested on the 15 2022 model), from the 2015 Blade Stealth to the 2025 Blade 16.
+Supports 49 Razer laptops (but only tested on the 15 2022 model), from the 2015 Blade Stealth to
+the 2026 Blade 18. 37 of them have per-key lighting, using the grid size OpenRazer lists for each
+model: 6 × 16 on most, 6 × 17 on the Blade 16 (2025), 6 × 19 on the Blade 18 (2025), 6 × 22 on the
+Blade Stealth (2015) and Blade Pro (Late 2016), and 6 × 25 on the Blade Pro (2017) models.
 
 <details>
 <summary>Device list</summary>
@@ -67,6 +78,8 @@ Supports 50 Razer laptops (but only tested on the 15 2022 model), from the 2015 
 
 "Supported" means the model is in the device database. The lighting features were verified on the
 tested model, so other models may hit firmware quirks. Open an issue if you do so we can work to fix it.
+Paint-grid key labels were measured on the tested model; other 16-column models most likely match,
+and wider grids are shown unlabeled.
 
 For troubleshooting find your model's USB PID:
 ```bash
@@ -263,12 +276,17 @@ libadwaita ≥ 1.5 are needed to build the GUI.
        "name": "Blade XX 20XX",
        "vid": "1532",
        "pid": "YOUR_PID_HERE",
-       "features": ["logo", "boost", "bho"],
-       "fan": [2200, 5000]
+       "features": ["logo", "boost", "bho", "per_key_rgb"],
+       "fan": [2200, 5000],
+       "matrix": [6, 16]
    }
    ```
+   Add `per_key_rgb` and `matrix` (rows, columns) only if your keyboard has per-key lighting;
+   OpenRazer's `MATRIX_DIMS` for your model gives the grid size.
 3. Add the PID to the `ATTRS{idProduct}` list in `data/udev/70-openrazer-hidraw.rules`.
-4. Reinstall: `./packaging/install.sh install`.
+4. Run `cargo test`, which checks the device list for duplicate PIDs, missing udev entries, and
+   invalid grid sizes.
+5. Reinstall: `./packaging/install.sh install`.
 
 ## Warning
 
@@ -287,3 +305,5 @@ This project was started off of portions of earlier unmaintained open-source wor
 - [encomjp/razer-control-revived](https://github.com/encomjp/razer-control-revived) — the GTK4 app, HID fixes, and packaging this codebase was built from
 - [@johva1312](https://github.com/johva1312) — HID device init fallbacks and partial socket-read fix
 - [@sini](https://github.com/sini) — NixOS flake fixes
+- [openrazer/openrazer](https://github.com/openrazer/openrazer) — the HID protocol reference, per-model lighting grid sizes and
+  capabilities, keyboard layout ids, and the Ripple and CPU temperature effect designs

@@ -126,6 +126,7 @@ fn main() {
 
     if let Ok(mut d) = DEV_MANAGER.lock() {
         d.discover_devices();
+        kbd::board::set_cols(d.matrix_cols());
         if let Some(laptop) = d.get_device() {
             println!("supported device: {:?}", laptop.get_name());
         } else {
@@ -909,6 +910,34 @@ pub fn process_client_request(cmd: comms::DaemonCommand) -> Option<comms::Daemon
                     }
                 }
                 Some(comms::DaemonResponse::SetRippleEffect { result: res })
+            }
+            comms::DaemonCommand::SetTemperatureEffect { cool, hot } => {
+                stop_live_inputs();
+                let mut res = false;
+                if let Some(laptop) = d.get_device()
+                    && let Ok(mut k) = EFFECT_MANAGER.lock()
+                {
+                    k.pop_effect(laptop); // Remove old layer
+                    k.push_effect(
+                        kbd::effects::CpuTemperature::new(vec![cool, hot]),
+                        [true; kbd::TOTAL_KEYS],
+                    );
+                    res = true;
+                }
+                Some(comms::DaemonResponse::SetTemperatureEffect { result: res })
+            }
+            comms::DaemonCommand::GetDeviceInfo => {
+                let (mut firmware, mut layout, mut serial) = (String::new(), 0, String::new());
+                if let Some(laptop) = d.get_device() {
+                    firmware = laptop.read_firmware_version().unwrap_or_default();
+                    layout = laptop.read_keyboard_layout().unwrap_or(0);
+                    serial = laptop.read_serial().unwrap_or_default();
+                }
+                Some(comms::DaemonResponse::GetDeviceInfo {
+                    firmware,
+                    layout,
+                    serial,
+                })
             }
             comms::DaemonCommand::SetBatteryHealthOptimizer { is_on, threshold } => {
                 Some(comms::DaemonResponse::SetBatteryHealthOptimizer {

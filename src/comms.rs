@@ -129,6 +129,11 @@ pub enum DaemonCommand {
     SetGpuMode {
         mode: String,
     },
+    GetDeviceInfo,
+    SetTemperatureEffect {
+        cool: u8, // °C at or below which the keyboard is fully blue
+        hot: u8,  // °C at or above which it's fully red
+    }, // Whole keyboard colored by CPU temperature
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -234,6 +239,14 @@ pub enum DaemonResponse {
     SetGpuMode {
         result: bool,
         message: String,
+    },
+    GetDeviceInfo {
+        firmware: String, // e.g. "v1.2"; empty if the keyboard didn't answer
+        layout: u8,       // keyboard layout id (service::keyboard_layout_name); 0 if unknown
+        serial: String,   // empty when the keyboard doesn't store one (most Blades)
+    },
+    SetTemperatureEffect {
+        result: bool,
     },
 }
 

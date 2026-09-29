@@ -42,6 +42,8 @@ enum Args {
     Stars(StarsParams),
     /// Ripple effect: rings of light spreading out from each key press
     Ripple(RippleParams),
+    /// CPU Temperature effect: whole keyboard colored by CPU temperature
+    Temperature(TemperatureParams),
 }
 
 #[derive(Parser)]
@@ -78,7 +80,7 @@ struct StarsParams {
 
 #[derive(Parser)]
 struct RippleParams {
-    /// color mode (1=rainbow, 2=static)
+    /// color mode (1=rainbow, 2=static, 3=random color per press)
     color_mode: u8,
     /// red (0-255, used when color_mode=2)
     red: u8,
@@ -88,6 +90,14 @@ struct RippleParams {
     blue: u8,
     /// speed (1-4): 1=slowest, 4=fastest
     speed: u8,
+}
+
+#[derive(Parser)]
+struct TemperatureParams {
+    /// °C at or below which the keyboard is fully blue
+    cool: u8,
+    /// °C at or above which the keyboard is fully red
+    hot: u8,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -488,6 +498,7 @@ fn main() {
             blue,
             speed,
         }) => send_ripple_effect(color_mode, red, green, blue, speed),
+        Args::Temperature(TemperatureParams { cool, hot }) => send_temperature_effect(cool, hot),
     }
 }
 
@@ -681,6 +692,20 @@ fn send_ripple_effect(color_mode: u8, r: u8, g: u8, b: u8, speed: u8) {
         speed,
     }) {
         Some(comms::DaemonResponse::SetRippleEffect { result }) => {
+            if result {
+                println!("Effect set OK!");
+            } else {
+                eprintln!("Effect set FAIL!");
+            }
+        }
+        Some(_) => eprintln!("Unexpected response from daemon!"),
+        None => eprintln!("Unknown daemon error!"),
+    }
+}
+
+fn send_temperature_effect(cool: u8, hot: u8) {
+    match send_data(comms::DaemonCommand::SetTemperatureEffect { cool, hot }) {
+        Some(comms::DaemonResponse::SetTemperatureEffect { result }) => {
             if result {
                 println!("Effect set OK!");
             } else {
